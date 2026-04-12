@@ -56,9 +56,11 @@ from verl.utils.metric import (
     reduce_metrics,
 )
 from verl.utils.seqlen_balancing import get_seqlen_balanced_partitions, log_seqlen_unbalance
-from verl.utils.torch_functional import masked_mean
+from verl.utils.torch_functional import masked_mean, postprocess_data
 from verl.utils.tracking import ValidationGenerationsLogger
+from verl.utils.model import compute_position_id_with_mask
 
+from recipe.my_project.reward import extract_code_func_and_input_from_data, validate_python_code_task
 WorkerType = Type[Worker]
 
 
@@ -67,13 +69,20 @@ class Role(Enum):
     To create more roles dynamically, you can subclass Role and add new members
     """
 
-    Actor = 0
-    Rollout = 1
-    ActorRollout = 2
-    Critic = 3
-    RefPolicy = 4
-    RewardModel = 5
-    ActorRolloutRef = 6
+    Actor_A = 0
+    Rollout_A = 1
+    ActorRollout_A = 2
+    Critic_A = 3
+    RefPolicy_A = 4
+    RewardModel_A = 5
+    ActorRolloutRef_A = 6
+    Actor_B = 7
+    Rollout_B = 8
+    ActorRollout_B = 9
+    Critic_B = 10
+    RefPolicy_B = 11
+    RewardModel_B = 12
+    ActorRolloutRef_B = 13
 
 
 @dataclass
@@ -273,20 +282,32 @@ def compute_advantage(data: DataProto, adv_estimator, gamma=1.0, lam=1.0, num_re
         data.batch["returns"] = returns
     return data
 
-
-class RayPPOTrainer:
+def assign_grpo_uids(data: DataProto, rollout_n: int) -> None:
+    bs = len(data.batch)
+    if bs % rollout_n != 0:
+        raise ValueError(
+            f"fit_test GRPO: batch size {bs} must be divisible by actor_rollout_ref.rollout.n={rollout_n}"
+        )
+    uid_list: list[str] = []
+    for _ in range(bs // rollout_n):
+        gid = str(uuid.uuid4())
+        uid_list.extend([gid] * rollout_n)
+    data.non_tensor_batch["uid"] = np.array(uid_list, dtype=object)
+class MyTrainer:
     # TODO: support each role have individual ray_worker_group_cls,
     # i.e., support different backend of different role
     def __init__(
         self,
         config,
-        tokenizer,
+        tokenizer_A,
+        tokenizer_B,
         role_worker_mapping: dict[Role, WorkerType],
         resource_pool_manager: ResourcePoolManager,
         ray_worker_group_cls: RayWorkerGroup = RayWorkerGroup,
         processor=None,
         reward_fn=None,
         val_reward_fn=None,
+        val_reward_fn_gsm8k_b=None,
         train_dataset: Optional[Dataset] = None,
         val_dataset: Optional[Dataset] = None,
         collate_fn=None,
@@ -314,22 +335,26 @@ class RayPPOTrainer:
         """
 
         # Store the tokenizer for text processing
-        self.tokenizer = tokenizer
+        self.tokenizer_A = tokenizer_A
+        self.tokenizer_B = tokenizer_B
         self.processor = processor
         self.config = config
         self.reward_fn = reward_fn
         self.val_reward_fn = val_reward_fn
+        # Rule-based GSM8K scoring (NaiveRewardManager) for periodic eval of actor B only.
+        self.val_reward_fn_gsm8k_b = val_reward_fn_gsm8k_b
 
         self.hybrid_engine = config.actor_rollout_ref.hybrid_engine
         assert self.hybrid_engine, "Currently, only support hybrid engine"
 
-        if self.hybrid_engine:
-            assert Role.ActorRollout in role_worker_mapping, f"{role_worker_mapping.keys()=}"
 
         self.role_worker_mapping = role_worker_mapping
         self.resource_pool_manager = resource_pool_manager
-        self.use_reference_policy = Role.RefPolicy in role_worker_mapping
-        self.use_rm = Role.RewardModel in role_worker_mapping
+        self.use_reference_policy = True
+        self.use_rm = False
+        
+        # self.use_reference_policy = Role.RefPolicy in role_worker_mapping
+        # self.use_rm = Role.RewardModel in role_worker_mapping
         self.ray_worker_group_cls = ray_worker_group_cls
         self.device_name = device_name
         self.validation_generations_logger = ValidationGenerationsLogger()
@@ -596,6 +621,134 @@ class RayPPOTrainer:
         # Log to each configured logger
         self.validation_generations_logger.log(self.config.trainer.logger, samples, self.global_steps)
 
+    def _gsm8k_b_eval_interval(self) -> int:
+        """Effective period for B on GSM8K; 0 = disabled. -1 follows ``trainer.test_freq``."""
+        f = self.config.trainer.get("gsm8k_b_eval_freq", None)
+        if f is None:
+            f = -1
+        f = int(f)
+        if f == -1:
+            f = int(self.config.trainer.get("test_freq", -1))
+        return f
+
+    def _my_validate(self) -> dict:
+        """Run val_dataloader with **actor_rollout_wg_B** + naive GSM8K rule reward; metrics prefixed with ``val-B-gsm8k/``."""
+        if self.val_reward_fn_gsm8k_b is None:
+            return {}
+
+        data_source_lst = []
+        reward_extra_infos_dict: dict[str, list] = defaultdict(list)
+        sample_inputs = []
+        sample_outputs = []
+        sample_scores = []
+
+        val_n = self.config.actor_rollout_ref.rollout.val_kwargs.n
+        _gsm8k_rm_checked = False
+
+        for test_data in self.val_dataloader:
+            test_batch = DataProto.from_single_dict(test_data)
+            if not _gsm8k_rm_checked:
+                _gsm8k_rm_checked = True
+                rm0 = test_batch[0].non_tensor_batch.get("reward_model", {})
+                if self.config.reward_model.enable and rm0.get("style") == "model":
+                    return {}
+
+            test_batch = test_batch.repeat(repeat_times=val_n, interleave=True)
+
+            input_ids = test_batch.batch["input_ids"]
+            input_texts = [self.tokenizer_A.decode(ids, skip_special_tokens=True) for ids in input_ids]
+            sample_inputs.extend(input_texts)
+
+            batch_keys_to_pop = ["input_ids", "attention_mask", "position_ids"]
+            non_tensor_batch_keys_to_pop = ["raw_prompt_ids"]
+            if "multi_modal_data" in test_batch.non_tensor_batch:
+                non_tensor_batch_keys_to_pop.append("multi_modal_data")
+            if "raw_prompt" in test_batch.non_tensor_batch:
+                non_tensor_batch_keys_to_pop.append("raw_prompt")
+            if "tools_kwargs" in test_batch.non_tensor_batch:
+                non_tensor_batch_keys_to_pop.append("tools_kwargs")
+            if "interaction_kwargs" in test_batch.non_tensor_batch:
+                non_tensor_batch_keys_to_pop.append("interaction_kwargs")
+            test_gen_batch = test_batch.pop(
+                batch_keys=batch_keys_to_pop,
+                non_tensor_batch_keys=non_tensor_batch_keys_to_pop,
+            )
+
+            test_gen_batch.meta_info = {
+                "eos_token_id": self.tokenizer_B.eos_token_id,
+                "pad_token_id": self.tokenizer_B.pad_token_id,
+                "recompute_log_prob": False,
+                "do_sample": self.config.actor_rollout_ref.rollout.val_kwargs.do_sample,
+                "validate": True,
+            }
+
+            dp_size = self.actor_rollout_wg_B.world_size
+            test_gen_batch_padded, pad_size = pad_dataproto_to_divisor(test_gen_batch, dp_size)
+            if not self.async_rollout_mode:
+                test_output_gen_batch_padded = self.actor_rollout_wg_B.generate_sequences(test_gen_batch_padded)
+            else:
+                raise NotImplementedError("GSM8K B validation with async rollout is not wired for MyTrainer")
+
+            inp_len = len(test_gen_batch_padded)
+            out_len = len(test_output_gen_batch_padded)
+            expand_factor = out_len // inp_len if inp_len else 1
+            assert out_len == inp_len * expand_factor, (
+                f"_my_validate(B): output batch {out_len} not multiple of padded input {inp_len}"
+            )
+            test_output_gen_batch = unpad_dataproto(test_output_gen_batch_padded, pad_size=pad_size * expand_factor)
+
+            output_ids = test_output_gen_batch.batch["responses"]
+            output_texts = [self.tokenizer_B.decode(ids, skip_special_tokens=True) for ids in output_ids]
+            sample_outputs.extend(output_texts)
+
+            test_batch = test_batch.union(test_output_gen_batch)
+
+            result = self.val_reward_fn_gsm8k_b(test_batch, return_dict=True)
+            reward_tensor = result["reward_tensor"]
+            scores = reward_tensor.sum(-1).cpu().tolist()
+            sample_scores.extend(scores)
+
+            reward_extra_infos_dict["reward"].extend(scores)
+            if "reward_extra_info" in result:
+                for key, lst in result["reward_extra_info"].items():
+                    reward_extra_infos_dict[key].extend(lst)
+
+            data_source_lst.append(test_batch.non_tensor_batch.get("data_source", ["unknown"] * reward_tensor.shape[0]))
+
+        self._maybe_log_val_generations(inputs=sample_inputs, outputs=sample_outputs, scores=sample_scores)
+
+        gsm8k_dump = self.config.trainer.get("gsm8k_b_validation_data_dir", None)
+        val_data_dir = gsm8k_dump if gsm8k_dump else self.config.trainer.get("validation_data_dir", None)
+        if val_data_dir:
+            dump_sub = os.path.join(val_data_dir, "gsm8k_B")
+            self._dump_generations(
+                inputs=sample_inputs,
+                outputs=sample_outputs,
+                scores=sample_scores,
+                reward_extra_infos_dict=reward_extra_infos_dict,
+                dump_path=dump_sub,
+            )
+
+        for key_info, lst in reward_extra_infos_dict.items():
+            assert len(lst) == 0 or len(lst) == len(sample_scores), f"{key_info}: {len(lst)=}, {len(sample_scores)=}"
+
+        data_sources = np.concatenate(data_source_lst, axis=0)
+        data_src2var2metric2val = process_validation_metrics(data_sources, sample_inputs, reward_extra_infos_dict)
+        metric_dict = {}
+        for data_source, var2metric2val in data_src2var2metric2val.items():
+            core_var = "acc" if "acc" in var2metric2val else "reward"
+            for var_name, metric2val in var2metric2val.items():
+                n_max = max([int(name.split("@")[-1].split("/")[0]) for name in metric2val.keys()])
+                for metric_name, metric_val in metric2val.items():
+                    if (var_name == core_var) and any(metric_name.startswith(pfx) for pfx in ["mean", "maj", "best"]) and (f"@{n_max}" in metric_name):
+                        metric_sec = "val-core"
+                    else:
+                        metric_sec = "val-aux"
+                    pfx = f"val-B-gsm8k/{metric_sec}/{data_source}/{var_name}/{metric_name}"
+                    metric_dict[pfx] = metric_val
+
+        return metric_dict
+
     def _validate(self):
         data_source_lst = []
         reward_extra_infos_dict: dict[str, list] = defaultdict(list)
@@ -726,35 +879,31 @@ class RayPPOTrainer:
         self.resource_pool_to_cls = {pool: {} for pool in self.resource_pool_manager.resource_pool_dict.values()}
 
         # create actor and rollout
-        if self.hybrid_engine:
-            resource_pool = self.resource_pool_manager.get_resource_pool(Role.ActorRollout)
-            actor_rollout_cls = RayClassWithInitArgs(
-                cls=self.role_worker_mapping[Role.ActorRollout],
-                config=self.config.actor_rollout_ref,
-                role="actor_rollout",
-            )
-            self.resource_pool_to_cls[resource_pool]["actor_rollout"] = actor_rollout_cls
-        else:
-            raise NotImplementedError
+        resource_pool = self.resource_pool_manager.get_resource_pool(Role.ActorRollout_A)
+        actor_rollout_cls_A = RayClassWithInitArgs(
+            cls=self.role_worker_mapping[Role.ActorRollout_A],
+            config=self.config.actor_rollout_ref,
+            role="actor_rollout",
+        )
+        self.resource_pool_to_cls[resource_pool]["actor_rollout_A"] = actor_rollout_cls_A
 
-        # create critic
-        if self.use_critic:
-            resource_pool = self.resource_pool_manager.get_resource_pool(Role.Critic)
-            critic_cls = RayClassWithInitArgs(cls=self.role_worker_mapping[Role.Critic], config=self.config.critic)
-            self.resource_pool_to_cls[resource_pool]["critic"] = critic_cls
+        resource_pool = self.resource_pool_manager.get_resource_pool(Role.ActorRollout_B)
+        actor_rollout_cls_B = RayClassWithInitArgs(
+            cls=self.role_worker_mapping[Role.ActorRollout_B],
+            config=self.config.actor_rollout_ref,
+            role="actor_rollout",
+        )
+
+        self.resource_pool_to_cls[resource_pool]["actor_rollout_B"] = actor_rollout_cls_B
 
         # create reference policy if needed
-        if self.use_reference_policy:
-            resource_pool = self.resource_pool_manager.get_resource_pool(Role.RefPolicy)
-            ref_policy_cls = RayClassWithInitArgs(self.role_worker_mapping[Role.RefPolicy], config=self.config.actor_rollout_ref, role="ref")
-            self.resource_pool_to_cls[resource_pool]["ref"] = ref_policy_cls
+        resource_pool = self.resource_pool_manager.get_resource_pool(Role.RefPolicy_A)
+        ref_policy_cls_A = RayClassWithInitArgs(self.role_worker_mapping[Role.RefPolicy_A], config=self.config.actor_rollout_ref, role="ref")
+        self.resource_pool_to_cls[resource_pool]["ref_policy_A"] = ref_policy_cls_A
 
-        # create a reward model if reward_fn is None
-        if self.use_rm:
-            # we create a RM here
-            resource_pool = self.resource_pool_manager.get_resource_pool(Role.RewardModel)
-            rm_cls = RayClassWithInitArgs(self.role_worker_mapping[Role.RewardModel], config=self.config.reward_model)
-            self.resource_pool_to_cls[resource_pool]["rm"] = rm_cls
+        resource_pool = self.resource_pool_manager.get_resource_pool(Role.RefPolicy_B)
+        ref_policy_cls_B = RayClassWithInitArgs(self.role_worker_mapping[Role.RefPolicy_B], config=self.config.actor_rollout_ref, role="ref")
+        self.resource_pool_to_cls[resource_pool]["ref_policy_B"] = ref_policy_cls_B
 
         # initialize WorkerGroup
         # NOTE: if you want to use a different resource pool for each role, which can support different parallel size,
@@ -763,46 +912,87 @@ class RayPPOTrainer:
         # See https://github.com/volcengine/verl/blob/master/examples/ray/tutorial.ipynb for more information.
         all_wg = {}
         wg_kwargs = {}  # Setting up kwargs for RayWorkerGroup
-        if OmegaConf.select(self.config.trainer, "ray_wait_register_center_timeout") is not None:
-            wg_kwargs["ray_wait_register_center_timeout"] = self.config.trainer.ray_wait_register_center_timeout
-        if OmegaConf.select(self.config.trainer, "profile_steps") is not None:
-            wg_kwargs["profile_steps"] = OmegaConf.select(self.config.trainer, "profile_steps")
-            assert OmegaConf.select(self.config.trainer, "worker_nsight_options") is not None, "worker_nsight_options must be set when profile_steps is set"
-            wg_kwargs["worker_nsight_options"] = OmegaConf.to_container(OmegaConf.select(self.config.trainer, "worker_nsight_options"))
 
         for resource_pool, class_dict in self.resource_pool_to_cls.items():
             worker_dict_cls = create_colocated_worker_cls(class_dict=class_dict)
             wg_dict = self.ray_worker_group_cls(resource_pool=resource_pool, ray_cls_with_init=worker_dict_cls, device_name=self.device_name, **wg_kwargs)
             spawn_wg = wg_dict.spawn(prefix_set=class_dict.keys())
             all_wg.update(spawn_wg)
+        
+        
+        self.ref_policy_wg_A = all_wg["ref_policy_A"]
+        self.ref_policy_wg_A.init_model()
+        self.ref_policy_wg_B = all_wg["ref_policy_B"]
+        self.ref_policy_wg_B.init_model()
+        self.actor_rollout_wg_A = all_wg["actor_rollout_A"]
+        self.actor_rollout_wg_A.init_model()
+        self.actor_rollout_wg_B = all_wg["actor_rollout_B"]
+        self.actor_rollout_wg_B.init_model()
 
-        if self.use_critic:
-            self.critic_wg = all_wg["critic"]
-            self.critic_wg.init_model()
-
-        if self.use_reference_policy and not self.ref_in_actor:
-            self.ref_policy_wg = all_wg["ref"]
-            self.ref_policy_wg.init_model()
-
-        if self.use_rm:
-            self.rm_wg = all_wg["rm"]
-            self.rm_wg.init_model()
-
-        # we should create rollout at the end so that vllm can have a better estimation of kv cache memory
-        self.actor_rollout_wg = all_wg["actor_rollout"]
-        self.actor_rollout_wg.init_model()
 
         # create async rollout manager and request scheduler
         self.async_rollout_mode = False
-        if self.config.actor_rollout_ref.rollout.mode == "async":
-            from verl.workers.rollout.async_server import AsyncLLMServerManager
+        # if self.config.actor_rollout_ref.rollout.mode == "async":
+        #     from verl.workers.rollout.async_server import AsyncLLMServerManager
 
-            self.async_rollout_mode = True
-            self.async_rollout_manager = AsyncLLMServerManager(
-                config=self.config,
-                worker_group=self.actor_rollout_wg,
-            )
+        #     self.async_rollout_mode = True
+        #     self.async_rollout_manager = AsyncLLMServerManager(
+        #         config=self.config,
+        #         worker_group=self.actor_rollout_wg,
+        #     )
+    def infer_test(self, input_text):
+        raw_prompt = self.tokenizer_A.apply_chat_template([{"role": "user", "content": input_text}], add_generation_prompt=True, tokenize=False)
+        model_inputs = self.tokenizer_A(raw_prompt, return_tensors="pt", add_special_tokens=False)
+        
+        input_ids = model_inputs.pop("input_ids")
+        attention_mask = model_inputs.pop("attention_mask")
+        
+        input_ids, attention_mask = postprocess_data(
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            max_length=self.config.data.get("max_prompt_length", 2048),
+            pad_token_id=self.tokenizer_A.pad_token_id,
+            left_pad=True,
+            truncation="error",
+        )
+        position_ids = compute_position_id_with_mask(attention_mask)
 
+        test_gen_batch = DataProto.from_single_dict({
+            "input_ids": input_ids,
+            "attention_mask": attention_mask,
+            "position_ids": position_ids,
+        })
+        test_gen_batch.meta_info = {
+            "eos_token_id": self.tokenizer_A.eos_token_id,
+            "pad_token_id": self.tokenizer_A.pad_token_id,
+            "recompute_log_prob": False,
+        }
+        # generate_sequences 走 DP：batch 长度须能被 world_size 整除，否则 chunk 报错（见 protocol.DataProto.chunk）
+        dp_size = self.actor_rollout_wg_A.world_size
+        test_gen_batch_padded, pad_size = pad_dataproto_to_divisor(test_gen_batch, dp_size)
+        test_output_gen_batch_padded_A = self.actor_rollout_wg_A.generate_sequences(test_gen_batch_padded)
+        test_output_gen_batch_padded_B = self.actor_rollout_wg_B.generate_sequences(test_gen_batch_padded)
+        # rollout.n>1 时 vLLM 把每条 prompt 扩成 n 行输出（见 vllm_rollout_spmd 注释），unpad 须按「扩之后的行」删 pad_size 份
+        inp_len = len(test_gen_batch_padded)
+        out_len_A = len(test_output_gen_batch_padded_A)
+        out_len_B = len(test_output_gen_batch_padded_B)
+        expand_factor = out_len_A // inp_len if inp_len else 1
+        assert out_len_A == inp_len * expand_factor, f"infer_test: output batch {out_len_A} not multiple of input {inp_len_A}"
+        assert out_len_B == inp_len * expand_factor, f"infer_test: output batch {out_len_B} not multiple of input {inp_len_B}"
+        test_output_gen_batch_A = unpad_dataproto(test_output_gen_batch_padded_A, pad_size=pad_size * expand_factor)
+        test_output_gen_batch_B = unpad_dataproto(test_output_gen_batch_padded_B, pad_size=pad_size * expand_factor)
+        output_ids_A = test_output_gen_batch_A.batch["responses"] #已经 padding 到了max_response_length
+        output_ids_B = test_output_gen_batch_B.batch["responses"]
+        output_texts_A = [self.tokenizer_A.decode(ids, skip_special_tokens=True) for ids in output_ids_A] #已经 skip_special_tokens=True，使得padding的token_id被跳过
+        output_texts_B = [self.tokenizer_B.decode(ids, skip_special_tokens=True) for ids in output_ids_B]
+        print("response_id_A长度：", len(output_ids_A))
+        print("response_id_B长度：", len(output_ids_B))
+
+        print("output_texts_A", output_texts_A)
+        print("output_texts_B", output_texts_B)
+        return None
+
+        
     def _save_checkpoint(self):
         from verl.utils.fs import local_mkdir_safe
 
@@ -837,6 +1027,13 @@ class RayPPOTrainer:
         local_latest_checkpointed_iteration = os.path.join(self.config.trainer.default_local_dir, "latest_checkpointed_iteration.txt")
         with open(local_latest_checkpointed_iteration, "w") as f:
             f.write(str(self.global_steps))
+
+    def _write_latest_checkpoint_iteration_file(self, ckpt_dir: str, global_step: int) -> None:
+        """Label a flat latest-only checkpoint dir with the training step (driver-side, rank-0 metadata)."""
+        os.makedirs(ckpt_dir, exist_ok=True)
+        path = os.path.join(ckpt_dir, "latest_checkpointed_iteration.txt")
+        with open(path, "w", encoding="ascii") as f:
+            f.write(str(global_step))
 
     def _load_checkpoint(self):
         if self.config.trainer.resume_mode == "disable":
@@ -902,6 +1099,499 @@ class RayPPOTrainer:
         global_balance_stats = log_seqlen_unbalance(seqlen_list=global_seqlen_lst, partitions=global_partition_lst, prefix=logging_prefix)
         metrics.update(global_balance_stats)
 
+    def fit_test(self):
+        '''
+        The training test.
+        train the two llm to generate 80 words of response.
+        '''
+        from omegaconf import OmegaConf
+
+        from verl.utils.tracking import Tracking
+
+        logger = Tracking(
+            project_name=self.config.trainer.project_name,
+            experiment_name=self.config.trainer.experiment_name,
+            default_backend=self.config.trainer.logger,
+            config=OmegaConf.to_container(self.config, resolve=True),
+        )
+
+        self.global_steps = 0
+        
+        metrics = {}
+        progress_bar = tqdm(total=self.total_training_steps, initial=self.global_steps, desc="Training Progress")
+        prompt = "generate a narrative story of 80 words"
+        raw_prompt = self.tokenizer_A.apply_chat_template([{"role": "user", "content": prompt}], add_generation_prompt=True, tokenize=False)
+        model_inputs = self.tokenizer_A(raw_prompt, return_tensors="pt", add_special_tokens=False)
+        input_ids = model_inputs.pop("input_ids")
+        attention_mask = model_inputs.pop("attention_mask")
+        input_ids, attention_mask = postprocess_data(
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            max_length=self.config.data.get("max_prompt_length", 2048),
+            pad_token_id=self.tokenizer_A.pad_token_id,
+            left_pad=True,
+            truncation="error",
+        )
+        position_ids = compute_position_id_with_mask(attention_mask)
+        gen_batch = DataProto.from_single_dict({
+            "input_ids": input_ids,
+            "attention_mask": attention_mask,
+            "position_ids": position_ids,
+        })
+        gen_batch.meta_info = {
+            "eos_token_id": self.tokenizer_A.eos_token_id,
+            "pad_token_id": self.tokenizer_A.pad_token_id,
+            "recompute_log_prob": False,
+        }
+        dp_size = self.actor_rollout_wg_A.world_size
+        gen_batch_padded, pad_size = pad_dataproto_to_divisor(gen_batch, dp_size)
+
+        for i in range(self.total_training_steps):
+            print(f"\n========== Training step {i+1} of {self.total_training_steps} ==========\n")
+            timing_raw = {}
+            with marked_timer("step", timing_raw, color="red"):
+                with marked_timer("generate_sequences", timing_raw, color="blue"):
+                    gen_batch_output_A = self.actor_rollout_wg_A.generate_sequences(gen_batch_padded)
+                    gen_batch_output_B = self.actor_rollout_wg_B.generate_sequences(gen_batch_padded)
+                    # inp_len = len(gen_batch_padded)
+                    # out_len_A = len(gen_batch_output_A)
+                    # out_len_B = len(gen_batch_output_B)
+                    # expand_factor = out_len_A // inp_len if inp_len else 1
+                    # assert out_len_A == inp_len * expand_factor, f"infer_test: output batch {out_len_A} not multiple of input {inp_len_A}"
+                    # assert out_len_B == inp_len * expand_factor, f"infer_test: output batch {out_len_B} not multiple of input {inp_len_B}"
+                    # gen_batch_output_A = unpad_dataproto(gen_batch_output_A, pad_size=pad_size * expand_factor)
+                    # gen_batch_output_B = unpad_dataproto(gen_batch_output_B, pad_size=pad_size * expand_factor)
+                    # output_ids_A = gen_batch_output_A.batch["responses"]
+                    # output_ids_B = gen_batch_output_B.batch["responses"]
+                    # output_texts_A = [self.tokenizer_A.decode(ids, skip_special_tokens=True) for ids in output_ids_A]
+                    # output_texts_B = [self.tokenizer_B.decode(ids, skip_special_tokens=True) for ids in output_ids_B]
+                    
+                    gen_batch_output_A.batch["response_mask"] = compute_response_mask(gen_batch_output_A)
+                    gen_batch_output_B.batch["response_mask"] = compute_response_mask(gen_batch_output_B)
+                    # responses: [batch, seq] — 用 batch_decode；decode 只接受单条 1D ids
+                    texts_a = self.tokenizer_A.batch_decode(gen_batch_output_A.batch["responses"], skip_special_tokens=True)
+                    texts_b = self.tokenizer_B.batch_decode(gen_batch_output_B.batch["responses"], skip_special_tokens=True)
+                    metrics["A/response_preview"] = texts_a
+                    metrics["B/response_preview"] = texts_b
+                # reward：WordCountRewardManager 默认只返回一个 tensor；若写成 a,b = fn(...) 会对该 tensor 按第 0 维拆包，rollout.n>1 时会报 too many values to unpack
+                with marked_timer("reward", timing_raw, color="green"):
+                    out_A = self.reward_fn(gen_batch_output_A, return_dict=True)
+                    out_B = self.reward_fn(gen_batch_output_B, return_dict=True)
+                    reward_tensor_A, extra_info_A = out_A["reward_tensor"], out_A["reward_extra_info"]
+                    reward_tensor_B, extra_info_B = out_B["reward_tensor"], out_B["reward_extra_info"]
+                    print("reward_tensor_A", reward_tensor_A)
+                    print("reward_tensor_B", reward_tensor_B)
+                    print("extra_info_A", extra_info_A)
+                    print("extra_info_B", extra_info_B)
+                    # reduce_metrics 会原地改写 dict，避免污染后续使用的 extra_info_*
+                    metrics.update({f"A/{k}": v for k, v in reduce_metrics(deepcopy(extra_info_A)).items()})
+                    metrics.update({f"B/{k}": v for k, v in reduce_metrics(deepcopy(extra_info_B)).items()})
+
+                    
+                with marked_timer("old_log_prob", timing_raw, color="purple"):
+                    old_log_prob_A = self.actor_rollout_wg_A.compute_log_prob(gen_batch_output_A) #[B,L_r]
+                    old_log_prob_B = self.actor_rollout_wg_B.compute_log_prob(gen_batch_output_B)
+                    batch_A = gen_batch_output_A.union(old_log_prob_A)
+                    batch_B = gen_batch_output_B.union(old_log_prob_B)
+                    entropys_A = batch_A.batch["entropys"]
+                    entropys_B = batch_B.batch["entropys"]
+                    print("entropys_A", entropys_A)
+                    print("entropys_B", entropys_B)
+                    print("old_log_prob_A", old_log_prob_A)
+                    print("old_log_prob_B", old_log_prob_B)
+
+                with marked_timer("ref", timing_raw, color="orange"):
+                    ref_log_prob_A = self.ref_policy_wg_A.compute_ref_log_prob(batch_A)
+                    ref_log_prob_B = self.ref_policy_wg_B.compute_ref_log_prob(batch_B)
+                    print("ref_log_prob_A", ref_log_prob_A)
+                    print("ref_log_prob_B", ref_log_prob_B)
+                    batch_A = batch_A.union(ref_log_prob_A)
+                    batch_B = batch_B.union(ref_log_prob_B)
+                    
+                with marked_timer("adv", timing_raw, color="red"):
+                    batch_A.batch["token_level_scores"] = reward_tensor_A
+                    batch_B.batch["token_level_scores"] = reward_tensor_B
+                    batch_A.batch["token_level_rewards"] = reward_tensor_A
+                    batch_B.batch["token_level_rewards"] = reward_tensor_B
+
+                    # GRPO 必须提供 uid：同一 prompt 的 rollout.n 条样本同组（与 vLLM 输出行序一致：每组连续 rollout_n 行）
+                    rollout_n = self.config.actor_rollout_ref.rollout.n
+
+
+                    assign_grpo_uids(batch_A, rollout_n)
+                    assign_grpo_uids(batch_B, rollout_n)
+
+                    batch_A = compute_advantage(
+                        batch_A,
+                        adv_estimator=self.config.algorithm.adv_estimator,
+                        norm_adv_by_std_in_grpo=self.config.algorithm.get("norm_adv_by_std_in_grpo", True),
+                    )
+                    batch_B = compute_advantage(
+                        batch_B,
+                        adv_estimator=self.config.algorithm.adv_estimator,
+                        norm_adv_by_std_in_grpo=self.config.algorithm.get("norm_adv_by_std_in_grpo", True),
+                    )
+
+                    # def _print_nonzero_2d(tag: str, t: torch.Tensor) -> None:
+                    #     idx = torch.nonzero(t, as_tuple=False)
+                    #     if idx.numel() == 0:
+                    #         print(f"{tag} non-zero: (none)")
+                    #         return
+                    #     vals = t[idx[:, 0], idx[:, 1]]
+                    #     print(f"{tag} non-zero indices [batch, pos]:\n{idx}\nvalues:\n{vals}")
+
+                    # _print_nonzero_2d("batch_A.batch['token_level_scores']", batch_A.batch["token_level_scores"])
+                    # _print_nonzero_2d("batch_A.batch['token_level_rewards']", batch_A.batch["token_level_rewards"])
+                    # _print_nonzero_2d("batch_B.batch['token_level_scores']", batch_B.batch["token_level_scores"])
+                    # _print_nonzero_2d("batch_B.batch['token_level_rewards']", batch_B.batch["token_level_rewards"])
+                    print("advantage_A", batch_A.batch["advantages"])  #(B, L_r)
+                    print("returns_A", batch_A.batch["returns"])  #(B, L_r)
+
+
+
+                with marked_timer("update_actor", timing_raw, color="orange"):
+                    # update_actor 内用 global_token_num 估计 MFU；与 verl/trainer/ppo/ray_trainer.py fit() 一致
+                    batch_A.meta_info["global_token_num"] = torch.sum(batch_A.batch["attention_mask"], dim=-1).tolist()
+                    batch_B.meta_info["global_token_num"] = torch.sum(batch_B.batch["attention_mask"], dim=-1).tolist()
+                    self.actor_rollout_wg_A.update_actor(batch_A)
+                    self.actor_rollout_wg_B.update_actor(batch_B)
+                metrics.update(timing_raw)
+                logger.log(data=metrics, step=self.global_steps)
+                self.global_steps += 1
+                progress_bar.update(1)
+                # self.actor_rollout_wg_A.save_checkpoint("/data0/yy/verl/checkpoint_A", None, self.global_steps)
+
+    def fit_competition(self):
+        '''
+        The training test.
+        train the A llm to generate code func and input for the B llm.
+        train the B llm to generate the output of the code func.
+        '''
+        from omegaconf import OmegaConf
+
+        from verl.utils.tracking import Tracking
+
+        logger = Tracking(
+            project_name=self.config.trainer.project_name,
+            experiment_name=self.config.trainer.experiment_name,
+            default_backend=self.config.trainer.logger,
+            config=OmegaConf.to_container(self.config, resolve=True),
+        )
+
+        self.global_steps = 0
+        self.total_training_steps=300
+        metrics = {}
+        progress_bar = tqdm(total=self.total_training_steps, initial=self.global_steps, desc="Training Progress")
+
+        # 与 fit() 中 val_before_train 一致；双模型下训练前评测用 B + GSM8K（_my_validate），而非单路 _validate。
+        if self.val_reward_fn_gsm8k_b is not None and self.config.trainer.get("val_before_train", True):
+            val_metrics = self._my_validate()
+            assert val_metrics, f"{val_metrics=}"
+            pprint(f"Initial B/GSM8K validation metrics: {val_metrics}")
+            logger.log(data=val_metrics, step=self.global_steps)
+            if self.config.trainer.get("val_only", False):
+                return
+
+        # Two fenced blocks: ```python (definitions + def f only) then ```input (args for f(...), not the answer).
+        prompt_A = """## Task: Create a New Python Code Snippet with One Matching Input
+
+You prepare a challenging task for another model (model B). Using standard Python only, design a **new and unique** code snippet where a test subject must use **deep algorithmic reasoning** to predict the **deterministic output** from the given input (like an I.Q. test).
+
+Your submission must include:
+1) A **first** code block: **only** imports (optional), optional classes/helpers, and **one** function named exactly **`f`**.
+2) A **second** block: **only** the arguments that will be passed to `f` — **not** the computed output.
+
+### Code block (```python) — STRICT CONTENT RULES
+- The **only** top-level callable entry point must be **`def f(...):`**. Do **not** use another name (wrong: `def find_maximum_sum`, `def solve`, etc.).
+- Allowed at top level, in order: `import ...` (stdlib only), optional `class` / helper `def` **only if required**, then **`def f(...):`** whose body ends with **`return ...`**.
+- **FORBIDDEN inside the first block** (very common mistakes — do not do these):
+  - Any **test harness**: assigning `result = f(...)`, calling `f(...)` at module level, `if __name__ == "__main__":`, etc.
+  - **`print(...)`**, **`input(...)`**, logging, or **comments like `# Input`** followed by fake test code.
+  - **Parsing strings** that duplicate the job of `f` outside `f` (e.g. `input_args = '1,2,3'` then `f([int(x) for ...])` at top level). Put logic **inside** `f` instead; the second block supplies **ready Python values** as arguments.
+  - Anything **after** the final line of `def f` (no trailing top-level statements).
+- Nested `def` / classes **inside** `f` are allowed.
+- `f` must **return** a value, take **at least one** parameter, be **deterministic**.
+- Require **multi-step reasoning** (e.g. trees, heaps, graphs, DP, recursion, backtracking, etc.).
+- **AVOID:** randomness, date/time, I/O, printing, external mutable state. ~10s CPU.
+
+### Second block (```input) — STRICT
+- Must contain **only** a comma-separated list of **Python expressions** that are the **arguments to `f`**, in order — what you would write inside `f(` `)`.
+- **WRONG:** the expected numeric/text **answer** (e.g. `13`), or a bare output label. **RIGHT:** values such as `[-1, 2, -3, 4]` or `'John', {'age': 20}`.
+
+### Formatting — exactly two fences, in order, nothing else
+1) ```python — **only** the rules above (imports + optional types + `def f...`).
+2) ```input — **only** the argument list for one call `f(...)`.
+
+### Good example
+```python
+def f(name: str, info: dict) -> str:
+    # logic only inside f
+    return str(len(name)) + str(info.get("age", 0))
+```
+```input
+'John', {'age': 20, 'city': 'New York'}
+```
+
+### Bad example (do NOT output anything like this)
+- First block ends with `print(result)` or `result = find_maximum_sum(...)` — **invalid**.
+- Second block is `13` — that is an **answer**, not **inputs** — **invalid**.
+
+### Quality
+- Executable as: load first block, then `f(<args from second block>)`.
+- Prefer non-trivial algorithmic depth; avoid trivial one-liners.
+
+Briefly plan internally, then output **only** the two fenced blocks (no other text)."""
+        
+        raw_prompt_A = self.tokenizer_A.apply_chat_template([{"role": "system", "content": "You are a helpful assistant."}, {"role": "user", "content": prompt_A}], add_generation_prompt=True, tokenize=False)
+        model_inputs_A = self.tokenizer_A(raw_prompt_A, return_tensors="pt", add_special_tokens=False)
+        input_ids_A = model_inputs_A.pop("input_ids")
+        attention_mask_A = model_inputs_A.pop("attention_mask")
+        input_ids_A, attention_mask_A = postprocess_data(
+            input_ids=input_ids_A,
+            attention_mask=attention_mask_A,
+            max_length=self.config.data.get("max_prompt_length", 2048),
+            pad_token_id=self.tokenizer_A.pad_token_id,
+            left_pad=True,
+            truncation="error",
+        )
+        position_ids_A = compute_position_id_with_mask(attention_mask_A)
+        gen_batch_A = DataProto.from_single_dict({
+            "input_ids": input_ids_A,
+            "attention_mask": attention_mask_A,
+            "position_ids": position_ids_A,
+        })
+        gen_batch_A.meta_info = {
+            "eos_token_id": self.tokenizer_A.eos_token_id,
+            "pad_token_id": self.tokenizer_A.pad_token_id,
+            "recompute_log_prob": False,
+        }
+        dp_size = self.actor_rollout_wg_A.world_size
+        gen_batch_padded_A, pad_size_A = pad_dataproto_to_divisor(gen_batch_A, dp_size)
+        self.total_training_steps=300
+        for i in range(self.total_training_steps):
+            print(f"\n========== Training step {i+1} of {self.total_training_steps} ==========\n")
+            timing_raw = {}
+            with marked_timer("step", timing_raw, color="red"):
+                with marked_timer("generate_sequences_A", timing_raw, color="blue"):
+                    gen_batch_output_A = self.actor_rollout_wg_A.generate_sequences(gen_batch_padded_A)
+                
+                    gen_batch_output_A.batch["response_mask"] = compute_response_mask(gen_batch_output_A)
+                    if pad_size_A:
+                        gen_batch_output_A = unpad_dataproto(gen_batch_output_A, pad_size_A)
+                    # responses: [batch, seq] — 用 batch_decode；decode 只接受单条 1D ids
+                    texts_a = self.tokenizer_A.batch_decode(gen_batch_output_A.batch["responses"], skip_special_tokens=True)
+                    metrics["A/response_preview"] = texts_a
+                with marked_timer("extract_code_func_and_input", timing_raw, color="green"):
+                    func_code_list, input_code_list, parse_ok_list = extract_code_func_and_input_from_data(gen_batch_output_A, self.tokenizer_A)
+                    bs_a = len(gen_batch_output_A)
+                    assert len(parse_ok_list) == bs_a
+                    # 逐样本写入 non_tensor_batch（与 batch 第 0 维对齐；union/slice/unpad 会一并带走）
+                    gen_batch_output_A.non_tensor_batch["parse_ok"] = np.array(parse_ok_list, dtype=bool)
+                    validate_ok_row = [False] * bs_a
+                    validated_tuples: list[tuple[str, str, str | None, int]] = []
+                    for idx in range(bs_a):
+                        if not parse_ok_list[idx]:
+                            continue
+                        f, i = func_code_list[idx], input_code_list[idx]
+                        ok, _err, captured = validate_python_code_task(f, i)
+                        validate_ok_row[idx] = ok
+                        if ok:
+                            validated_tuples.append((f, i, captured, idx))
+                    a_b_group = np.full(bs_a, -1, dtype=np.int64)
+                    for j, _tup in enumerate(validated_tuples):
+                        _f, _i, _cap, a_idx = _tup
+                        a_b_group[a_idx] = j
+                    gen_batch_output_A.non_tensor_batch["competition_b_group"] = a_b_group
+                    gen_batch_output_A.non_tensor_batch["validate_ok"] = np.array(validate_ok_row, dtype=bool)
+                    metrics["A/code_parse_ok_count"] = int(np.sum(gen_batch_output_A.non_tensor_batch["parse_ok"]))
+                    metrics["A/code_validate_ok_count"] = int(np.sum(gen_batch_output_A.non_tensor_batch["validate_ok"]))
+                    has_b = len(validated_tuples) > 0
+
+                with marked_timer("prepare_data_B", timing_raw, color="green"):
+                    # 勿在循环内对同一字符串反复 .format：第一次会把 {{...}} 变成 {...}，第二次会把示例里的 { 当成占位符触发 KeyError
+                    prompt_B_template = """# Task: Deduce the output of a Python snippet given the code and input
+
+Reason step by step, then state the value returned by calling `f` with the given arguments.
+
+Rules for formatting the answer inside the block:
+- If the result is a string, include the quotes as in Python.
+- If multiple values are returned, show them as a tuple (or as Python would print them).
+
+# Code snippet
+```python
+{SNIPPET}
+```
+
+# Input (arguments to `f`)
+```input
+{INPUT}
+```
+
+# Example (format only; your answer replaces the placeholder below)
+```output
+{{'age': 20, 'city': 'New York'}}
+```
+"""
+                tensors_B = defaultdict(list)
+                non_tensors_B = defaultdict(list)
+                for f, i, captured, _a_idx in validated_tuples:
+                    prompt_B = prompt_B_template.format(SNIPPET=f, INPUT=i)
+                    model_inputs_B = self.tokenizer_B(prompt_B, return_tensors="pt", add_special_tokens=False)
+                    input_ids_B = model_inputs_B.pop("input_ids")
+                    attention_mask_B = model_inputs_B.pop("attention_mask")
+                    input_ids_B, attention_mask_B = postprocess_data(
+                        input_ids=input_ids_B,
+                        attention_mask=attention_mask_B,
+                        max_length=self.config.data.get("max_prompt_length", 2048),
+                        pad_token_id=self.tokenizer_B.pad_token_id,
+                        left_pad=True,
+                        truncation="error",
+                    )
+                    position_ids_B = compute_position_id_with_mask(attention_mask_B)
+                    tensors_B["input_ids"].append(input_ids_B)
+                    tensors_B["attention_mask"].append(attention_mask_B)
+                    tensors_B["position_ids"].append(position_ids_B)
+
+                    non_tensors_B["prompt"].append(prompt_B)
+                    non_tensors_B["gt_output"].append(captured)
+
+                gen_batch_output_B = None
+                if has_b:
+                    gen_batch_B = DataProto.from_single_dict(
+                        {
+                            "input_ids": torch.cat(tensors_B["input_ids"], dim=0),
+                            "attention_mask": torch.cat(tensors_B["attention_mask"], dim=0),
+                            "position_ids": torch.cat(tensors_B["position_ids"], dim=0),
+                            "prompt": np.array(non_tensors_B["prompt"], dtype=object),
+                            "gt_output": np.array(non_tensors_B["gt_output"], dtype=object),
+                        }
+                    )
+                    gen_batch_B.meta_info = {
+                        "eos_token_id": self.tokenizer_B.eos_token_id,
+                        "pad_token_id": self.tokenizer_B.pad_token_id,
+                        "recompute_log_prob": False,
+                    }
+                    dp_size = self.actor_rollout_wg_B.world_size
+                    gen_batch_padded_B, pad_size_B = pad_dataproto_to_divisor(gen_batch_B, dp_size)
+                    with marked_timer("generate_sequences_B", timing_raw, color="blue"):
+                        gen_batch_output_B = self.actor_rollout_wg_B.generate_sequences(gen_batch_padded_B)
+                        gen_batch_output_B.batch["response_mask"] = compute_response_mask(gen_batch_output_B)
+                        if pad_size_B:
+                            gen_batch_output_B = unpad_dataproto(gen_batch_output_B, pad_size_B)
+                        texts_b = self.tokenizer_B.batch_decode(gen_batch_output_B.batch["responses"], skip_special_tokens=True)
+                        metrics["B/response_preview"] = texts_b
+                        metrics["B/response_count"] = len(texts_b)
+                        metrics["fit_competition/skip_B_step"] = 0.0
+                else:
+                    metrics["fit_competition/skip_B_step"] = 1.0
+                    metrics["B/response_count"] = 0
+
+                # reward：WordCountRewardManager 默认只返回一个 tensor；若写成 a,b = fn(...) 会对该 tensor 按第 0 维拆包，rollout.n>1 时会报 too many values to unpack
+                with marked_timer("reward", timing_raw, color="green"):
+                    reward_AB = self.reward_fn(
+                        gen_batch_output_A,
+                        gen_batch_output_B if has_b else None,
+                        return_dict=True,
+                    )
+                    reward_tensor_A = reward_AB["reward_tensor_A"]
+                    reward_tensor_B = reward_AB.get("reward_tensor_B")
+                    extra_merged = reward_AB["reward_extra_info"]
+                    metrics.update({f"AB/{k}": v for k, v in reduce_metrics(deepcopy(extra_merged)).items()})
+
+                with marked_timer("old_log_prob", timing_raw, color="purple"):
+                    old_log_prob_A = self.actor_rollout_wg_A.compute_log_prob(gen_batch_output_A)  # [B,L_r]
+                    batch_A = gen_batch_output_A.union(old_log_prob_A)
+                    entropys_A = batch_A.batch["entropys"]
+                    if has_b:
+                        old_log_prob_B = self.actor_rollout_wg_B.compute_log_prob(gen_batch_output_B)
+                        batch_B = gen_batch_output_B.union(old_log_prob_B)
+                        entropys_B = batch_B.batch["entropys"]
+
+                with marked_timer("ref", timing_raw, color="orange"):
+                    ref_log_prob_A = self.ref_policy_wg_A.compute_ref_log_prob(batch_A)
+                    batch_A = batch_A.union(ref_log_prob_A)
+                    if has_b:
+                        ref_log_prob_B = self.ref_policy_wg_B.compute_ref_log_prob(batch_B)
+                        batch_B = batch_B.union(ref_log_prob_B)
+
+                with marked_timer("adv", timing_raw, color="red"):
+                    batch_A.batch["token_level_scores"] = reward_tensor_A
+                    batch_A.batch["token_level_rewards"] = reward_tensor_A
+
+                    # GRPO 必须提供 uid：同一 prompt 的 rollout.n 条样本同组（与 vLLM 输出行序一致：每组连续 rollout_n 行）
+                    rollout_n = self.config.actor_rollout_ref.rollout.n
+
+                    assign_grpo_uids(batch_A, rollout_n)
+                    batch_A = compute_advantage(
+                        batch_A,
+                        adv_estimator=self.config.algorithm.adv_estimator,
+                        norm_adv_by_std_in_grpo=self.config.algorithm.get("norm_adv_by_std_in_grpo", True),
+                    )
+                    if has_b:
+                        batch_B.batch["token_level_scores"] = reward_tensor_B
+                        batch_B.batch["token_level_rewards"] = reward_tensor_B
+                        assign_grpo_uids(batch_B, rollout_n)
+                        batch_B = compute_advantage(
+                            batch_B,
+                            adv_estimator=self.config.algorithm.adv_estimator,
+                            norm_adv_by_std_in_grpo=self.config.algorithm.get("norm_adv_by_std_in_grpo", True),
+                        )
+
+                    # def _print_nonzero_2d(tag: str, t: torch.Tensor) -> None:
+                    #     idx = torch.nonzero(t, as_tuple=False)
+                    #     if idx.numel() == 0:
+                    #         print(f"{tag} non-zero: (none)")
+                    #         return
+                    #     vals = t[idx[:, 0], idx[:, 1]]
+                    #     print(f"{tag} non-zero indices [batch, pos]:\n{idx}\nvalues:\n{vals}")
+
+                    # _print_nonzero_2d("batch_A.batch['token_level_scores']", batch_A.batch["token_level_scores"])
+                    # _print_nonzero_2d("batch_A.batch['token_level_rewards']", batch_A.batch["token_level_rewards"])
+                    # _print_nonzero_2d("batch_B.batch['token_level_scores']", batch_B.batch["token_level_scores"])
+                    # _print_nonzero_2d("batch_B.batch['token_level_rewards']", batch_B.batch["token_level_rewards"])
+                    # print("advantage_A", batch_A.batch["advantages"])  #(B, L_r)
+                    # print("returns_A", batch_A.batch["returns"])  #(B, L_r)
+
+
+
+                with marked_timer("update_actor", timing_raw, color="orange"):
+                    # update_actor 内用 global_token_num 估计 MFU；与 verl/trainer/ppo/ray_trainer.py fit() 一致
+                    batch_A.meta_info["global_token_num"] = torch.sum(batch_A.batch["attention_mask"], dim=-1).tolist()
+                    self.actor_rollout_wg_A.update_actor(batch_A)
+                    if has_b:
+                        batch_B.meta_info["global_token_num"] = torch.sum(batch_B.batch["attention_mask"], dim=-1).tolist()
+                        self.actor_rollout_wg_B.update_actor(batch_B)
+                metrics.update(timing_raw)
+                logger.log(data=metrics, step=self.global_steps)
+                self.global_steps += 1
+                progress_bar.update(1)
+
+                gsm8k_every = self._gsm8k_b_eval_interval()
+                if gsm8k_every > 0 and self.global_steps % gsm8k_every == 0:
+                    timing_gsm8k: dict = {}
+                    with marked_timer("gsm8k_b_validate", timing_gsm8k, color="cyan"):
+                        gsm8k_metrics = self._my_validate()
+                    if gsm8k_metrics:
+                        log_payload = dict(gsm8k_metrics)
+                        log_payload.update({f"timing_s/{k}": v for k, v in timing_gsm8k.items()})
+                        logger.log(data=log_payload, step=self.global_steps)
+
+                # 固定目录覆盖写入 = 只保留最新；latest_checkpointed_iteration.txt 标注与 save_checkpoint(global_step) 一致的步数
+                save_freq = self.config.trainer.get("save_freq", -1)
+                do_save = save_freq > 0 and (
+                    self.global_steps % save_freq == 0 or self.global_steps >= self.total_training_steps
+                )
+                if do_save:
+                    ckpt_dir_a = "/data0/yy/verl/checkpoint_A"
+                    ckpt_dir_b = "/data0/yy/verl/checkpoint_B"
+                    with marked_timer("save_checkpoint", timing_raw, color="green"):
+                        self.actor_rollout_wg_A.save_checkpoint(ckpt_dir_a, None, self.global_steps)
+                        self._write_latest_checkpoint_iteration_file(ckpt_dir_a, self.global_steps)
+                        if has_b:
+                            self.actor_rollout_wg_B.save_checkpoint(ckpt_dir_b, None, self.global_steps)
+                            self._write_latest_checkpoint_iteration_file(ckpt_dir_b, self.global_steps)
+
+        
     def fit(self):
         """
         The training loop of PPO.
@@ -921,7 +1611,7 @@ class RayPPOTrainer:
         )
 
         self.global_steps = 0
-        self.total_training_steps = 300
+
         # load checkpoint before doing anything
         self._load_checkpoint()
 

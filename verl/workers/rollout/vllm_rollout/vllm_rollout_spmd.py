@@ -314,13 +314,12 @@ class vLLMRollout(BaseRollout):
                 attention_mask = _repeat_interleave(attention_mask, self.sampling_params.n)
                 position_ids = _repeat_interleave(position_ids, self.sampling_params.n)
                 batch_size = batch_size * self.sampling_params.n
+                # 与 tensor 维一致：每条 prompt 扩成 n 行时，non_tensor_batch 逐行元数据也需 repeat（含自定义字段如 prompt/gt_output）
                 # NOTE(linjunrong): for multi-turn https://github.com/volcengine/verl/pull/1037
-                if "tools_kwargs" in non_tensor_batch.keys():
-                    non_tensor_batch["tools_kwargs"] = _repeat_interleave(non_tensor_batch["tools_kwargs"], self.sampling_params.n)
-                if "interaction_kwargs" in non_tensor_batch.keys():
-                    non_tensor_batch["interaction_kwargs"] = _repeat_interleave(non_tensor_batch["interaction_kwargs"], self.sampling_params.n)
-                if "raw_prompt" in non_tensor_batch.keys():
-                    non_tensor_batch["raw_prompt"] = _repeat_interleave(non_tensor_batch["raw_prompt"], self.sampling_params.n)
+                for key in list(non_tensor_batch.keys()):
+                    non_tensor_batch[key] = _repeat_interleave(
+                        non_tensor_batch[key], self.sampling_params.n
+                    )
 
             seq = torch.cat([idx, response], dim=-1)
 
