@@ -977,8 +977,8 @@ class MyTrainer:
         out_len_A = len(test_output_gen_batch_padded_A)
         out_len_B = len(test_output_gen_batch_padded_B)
         expand_factor = out_len_A // inp_len if inp_len else 1
-        assert out_len_A == inp_len * expand_factor, f"infer_test: output batch {out_len_A} not multiple of input {inp_len_A}"
-        assert out_len_B == inp_len * expand_factor, f"infer_test: output batch {out_len_B} not multiple of input {inp_len_B}"
+        assert out_len_A == inp_len * expand_factor, f"infer_test: output batch {out_len_A} not multiple of input {inp_len}"
+        assert out_len_B == inp_len * expand_factor, f"infer_test: output batch {out_len_B} not multiple of input {inp_len}"
         test_output_gen_batch_A = unpad_dataproto(test_output_gen_batch_padded_A, pad_size=pad_size * expand_factor)
         test_output_gen_batch_B = unpad_dataproto(test_output_gen_batch_padded_B, pad_size=pad_size * expand_factor)
         output_ids_A = test_output_gen_batch_A.batch["responses"] #已经 padding 到了max_response_length
@@ -1501,11 +1501,9 @@ Rules for formatting the answer inside the block:
                 with marked_timer("old_log_prob", timing_raw, color="purple"):
                     old_log_prob_A = self.actor_rollout_wg_A.compute_log_prob(gen_batch_output_A)  # [B,L_r]
                     batch_A = gen_batch_output_A.union(old_log_prob_A)
-                    entropys_A = batch_A.batch["entropys"]
                     if has_b:
                         old_log_prob_B = self.actor_rollout_wg_B.compute_log_prob(gen_batch_output_B)
                         batch_B = gen_batch_output_B.union(old_log_prob_B)
-                        entropys_B = batch_B.batch["entropys"]
 
                 with marked_timer("ref", timing_raw, color="orange"):
                     ref_log_prob_A = self.ref_policy_wg_A.compute_ref_log_prob(batch_A)

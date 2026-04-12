@@ -378,7 +378,6 @@ class CompetitionRewardManager:
             item = data_A[i]
             prompt_ids = item.batch["prompts"]
             prompt_length = prompt_ids.shape[-1]
-            valid_prompt_length = item.batch["attention_mask"][:prompt_length].sum()
 
             response_ids = item.batch["responses"]
             valid_response_length = item.batch["attention_mask"][prompt_length:].sum()
