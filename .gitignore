@@ -124,3 +124,8 @@ logs
 log
 outputs
 .history
+
+# Local model checkpoints (large; do not version)
+checkpoint_A/
+checkpoint_A_old/
+checkpoint_B/
