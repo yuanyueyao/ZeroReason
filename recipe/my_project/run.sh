@@ -2,7 +2,7 @@
 # It outperforms the Qwen2 7B base model by two percentage points on the test set of GSM8K.
 
 set -x
-export CUDA_VISIBLE_DEVICES=0,1
+export CUDA_VISIBLE_DEVICES=4,5
 python3 -m recipe.my_project.main_ppo \
     algorithm.adv_estimator=grpo \
     data.train_files=$HOME/data/gsm8k/train.parquet \
@@ -12,7 +12,7 @@ python3 -m recipe.my_project.main_ppo \
     data.max_response_length=4096 \
     data.filter_overlong_prompts=True \
     data.truncation='error' \
-    actor_rollout_ref.model.path=/data0/yy/model/Qwen3-1.7B \
+    actor_rollout_ref.model.path=/data0/yy/model/Qwen2.5-Coder-1.5B-Instruct \
     actor_rollout_ref.actor.optim.lr=1e-6 \
     actor_rollout_ref.model.use_remove_padding=True \
     actor_rollout_ref.actor.ppo_mini_batch_size=256 \
@@ -35,10 +35,15 @@ python3 -m recipe.my_project.main_ppo \
     trainer.critic_warmup=0 \
     trainer.logger=['console','wandb'] \
     trainer.project_name='verl_fit_competition' \
-    trainer.experiment_name='Qwen3-1.7B' \
+    trainer.experiment_name='Qwen2.5-Coder-1.5B-Instruct_gsm8k_promptV4' \
     trainer.n_gpus_per_node=1 \
     trainer.nnodes=1 \
-    trainer.save_freq=50 \
-    trainer.test_freq=-1 \
+    trainer.save_freq=100 \
+    trainer.test_freq=10 \
     trainer.total_epochs=15 \
-    trainer.val_before_train=False $@
+    trainer.total_training_steps=1200 \
+    trainer.val_before_train=True \
+    trainer.default_local_dir=/data0/yy/verl/checkpoints/Qwen2.5-Coder-1.5B-Instruct \
+    trainer.resume_mode=auto \
+    trainer.wandb_run_id=cfw05e30 \
+    trainer.wandb_resume=allow $@

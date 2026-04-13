@@ -62,7 +62,7 @@ from verl.utils.model import compute_position_id_with_mask
 
 from recipe.my_project.reward import extract_code_func_and_input_from_data, validate_python_code_task
 WorkerType = Type[Worker]
-
+from recipe.my_project.prompt import prompt_A_Qwen3_Base
 
 class Role(Enum):
     """
@@ -953,7 +953,7 @@ class MyTrainer:
             max_length=self.config.data.get("max_prompt_length", 2048),
             pad_token_id=self.tokenizer_A.pad_token_id,
             left_pad=True,
-            truncation="error",
+            truncation="left",
         )
         position_ids = compute_position_id_with_mask(attention_mask)
 
@@ -1028,13 +1028,6 @@ class MyTrainer:
         with open(local_latest_checkpointed_iteration, "w") as f:
             f.write(str(self.global_steps))
 
-    def _write_latest_checkpoint_iteration_file(self, ckpt_dir: str, global_step: int) -> None:
-        """Label a flat latest-only checkpoint dir with the training step (driver-side, rank-0 metadata)."""
-        os.makedirs(ckpt_dir, exist_ok=True)
-        path = os.path.join(ckpt_dir, "latest_checkpointed_iteration.txt")
-        with open(path, "w", encoding="ascii") as f:
-            f.write(str(global_step))
-
     def _load_checkpoint(self):
         if self.config.trainer.resume_mode == "disable":
             return 0
@@ -1085,6 +1078,95 @@ class MyTrainer:
             self.train_dataloader.load_state_dict(dataloader_state_dict)
         else:
             print(f"Warning: No dataloader state found at {dataloader_local_path}, will start from scratch")
+
+    def _save_checkpoint_competition(self) -> None:
+        """Save dual-actor checkpoints under ``default_local_dir/global_step_{N}/actor_A|actor_B`` + ``data.pt``."""
+        from verl.utils.fs import local_mkdir_safe
+
+        local_global_step_folder = os.path.join(self.config.trainer.default_local_dir, f"global_step_{self.global_steps}")
+        print(f"save checkpoint (competition): {local_global_step_folder}")
+        local_mkdir_safe(local_global_step_folder)
+
+        actor_a_local = os.path.join(local_global_step_folder, "actor_A")
+        actor_b_local = os.path.join(local_global_step_folder, "actor_B")
+        actor_a_remote = (
+            None
+            if self.config.trainer.default_hdfs_dir is None
+            else os.path.join(self.config.trainer.default_hdfs_dir, f"global_step_{self.global_steps}", "actor_A")
+        )
+        actor_b_remote = (
+            None
+            if self.config.trainer.default_hdfs_dir is None
+            else os.path.join(self.config.trainer.default_hdfs_dir, f"global_step_{self.global_steps}", "actor_B")
+        )
+
+        remove_previous_ckpt_in_save = self.config.trainer.get("remove_previous_ckpt_in_save", False)
+        if remove_previous_ckpt_in_save:
+            print(
+                "Warning: remove_previous_ckpt_in_save is deprecated,"
+                + " set max_actor_ckpt_to_keep=1 instead"
+            )
+        max_actor_ckpt_to_keep = self.config.trainer.get("max_actor_ckpt_to_keep", None) if not remove_previous_ckpt_in_save else 1
+
+        self.actor_rollout_wg_A.save_checkpoint(
+            actor_a_local, actor_a_remote, self.global_steps, max_ckpt_to_keep=max_actor_ckpt_to_keep
+        )
+        self.actor_rollout_wg_B.save_checkpoint(
+            actor_b_local, actor_b_remote, self.global_steps, max_ckpt_to_keep=max_actor_ckpt_to_keep
+        )
+
+        dataloader_local_path = os.path.join(local_global_step_folder, "data.pt")
+        dataloader_state_dict = self.train_dataloader.state_dict()
+        torch.save(dataloader_state_dict, dataloader_local_path)
+
+        local_latest_checkpointed_iteration = os.path.join(self.config.trainer.default_local_dir, "latest_checkpointed_iteration.txt")
+        os.makedirs(self.config.trainer.default_local_dir, exist_ok=True)
+        with open(local_latest_checkpointed_iteration, "w") as f:
+            f.write(str(self.global_steps))
+
+    def _load_checkpoint_competition(self) -> None:
+        """Resume ``fit_competition``: same layout as ``_save_checkpoint_competition``; respects ``trainer.resume_mode``."""
+        if self.config.trainer.resume_mode == "disable":
+            return
+
+        if self.config.trainer.default_hdfs_dir is not None:
+            raise NotImplementedError("load from hdfs is not implemented yet")
+
+        checkpoint_folder = self.config.trainer.default_local_dir
+        if not os.path.isabs(checkpoint_folder):
+            checkpoint_folder = os.path.join(os.getcwd(), checkpoint_folder)
+
+        global_step_folder = None
+        if self.config.trainer.resume_mode == "auto":
+            global_step_folder = find_latest_ckpt_path(checkpoint_folder)
+            if global_step_folder is None:
+                print("Competition: training from scratch (no checkpoint)")
+                return
+        elif self.config.trainer.resume_mode == "resume_path":
+            assert isinstance(self.config.trainer.resume_from_path, str), "resume ckpt must be str type"
+            assert "global_step_" in self.config.trainer.resume_from_path, "resume ckpt must specify the global_steps"
+            global_step_folder = self.config.trainer.resume_from_path
+            if not os.path.isabs(global_step_folder):
+                global_step_folder = os.path.join(os.getcwd(), global_step_folder)
+        else:
+            raise ValueError(f"Unknown resume_mode: {self.config.trainer.resume_mode}")
+
+        print(f"Competition: load from checkpoint folder: {global_step_folder}")
+        self.global_steps = int(global_step_folder.split("global_step_")[-1])
+        print(f"Competition: setting global_steps to {self.global_steps}")
+
+        actor_a_path = os.path.join(global_step_folder, "actor_A")
+        actor_b_path = os.path.join(global_step_folder, "actor_B")
+        del_local = self.config.trainer.del_local_ckpt_after_load
+        self.actor_rollout_wg_A.load_checkpoint(actor_a_path, del_local_after_load=del_local)
+        self.actor_rollout_wg_B.load_checkpoint(actor_b_path, del_local_after_load=del_local)
+
+        dataloader_local_path = os.path.join(global_step_folder, "data.pt")
+        if os.path.exists(dataloader_local_path):
+            dataloader_state_dict = torch.load(dataloader_local_path, weights_only=False)
+            self.train_dataloader.load_state_dict(dataloader_state_dict)
+        else:
+            print(f"Warning: No dataloader state at {dataloader_local_path}, dataloader starts from scratch")
 
     def _balance_batch(self, batch: DataProto, metrics, logging_prefix="global_seqlen"):
         """Reorder the data on single controller such that each dp rank gets similar total tokens"""
@@ -1279,7 +1361,9 @@ class MyTrainer:
         )
 
         self.global_steps = 0
-        self.total_training_steps=300
+        self.total_training_steps = self.config.trainer.get("total_training_steps", 600)
+        self._load_checkpoint_competition()
+
         metrics = {}
         progress_bar = tqdm(total=self.total_training_steps, initial=self.global_steps, desc="Training Progress")
 
@@ -1342,7 +1426,7 @@ def f(name: str, info: dict) -> str:
 
 Briefly plan internally, then output **only** the two fenced blocks (no other text)."""
         
-        raw_prompt_A = self.tokenizer_A.apply_chat_template([{"role": "system", "content": "You are a helpful assistant."}, {"role": "user", "content": prompt_A}], add_generation_prompt=True, tokenize=False)
+        raw_prompt_A = self.tokenizer_A.apply_chat_template([{"role": "system", "content": "You are a helpful assistant. Please think step by step and generate a new and unique code snippet with one matching input."}, {"role": "user", "content": prompt_A_Qwen3_Base}], add_generation_prompt=True, tokenize=False)
         model_inputs_A = self.tokenizer_A(raw_prompt_A, return_tensors="pt", add_special_tokens=False)
         input_ids_A = model_inputs_A.pop("input_ids")
         attention_mask_A = model_inputs_A.pop("attention_mask")
@@ -1352,7 +1436,7 @@ Briefly plan internally, then output **only** the two fenced blocks (no other te
             max_length=self.config.data.get("max_prompt_length", 2048),
             pad_token_id=self.tokenizer_A.pad_token_id,
             left_pad=True,
-            truncation="error",
+            truncation="left",
         )
         position_ids_A = compute_position_id_with_mask(attention_mask_A)
         gen_batch_A = DataProto.from_single_dict({
@@ -1367,12 +1451,11 @@ Briefly plan internally, then output **only** the two fenced blocks (no other te
         }
         dp_size = self.actor_rollout_wg_A.world_size
         gen_batch_padded_A, pad_size_A = pad_dataproto_to_divisor(gen_batch_A, dp_size)
-        self.total_training_steps=300
-        for i in range(self.total_training_steps):
-            print(f"\n========== Training step {i+1} of {self.total_training_steps} ==========\n")
+        while self.global_steps < self.total_training_steps:
+            print(f"\n========== Training step {self.global_steps + 1} of {self.total_training_steps} ==========\n")
             timing_raw = {}
-            with marked_timer("step", timing_raw, color="red"):
-                with marked_timer("generate_sequences_A", timing_raw, color="blue"):
+            with marked_timer("time/step", timing_raw, color="red"):
+                with marked_timer("time/generate_sequences_A", timing_raw, color="blue"):
                     gen_batch_output_A = self.actor_rollout_wg_A.generate_sequences(gen_batch_padded_A)
                 
                     gen_batch_output_A.batch["response_mask"] = compute_response_mask(gen_batch_output_A)
@@ -1381,7 +1464,7 @@ Briefly plan internally, then output **only** the two fenced blocks (no other te
                     # responses: [batch, seq] — 用 batch_decode；decode 只接受单条 1D ids
                     texts_a = self.tokenizer_A.batch_decode(gen_batch_output_A.batch["responses"], skip_special_tokens=True)
                     metrics["A/response_preview"] = texts_a
-                with marked_timer("extract_code_func_and_input", timing_raw, color="green"):
+                with marked_timer("time/extract_code_func_and_input", timing_raw, color="green"):
                     func_code_list, input_code_list, parse_ok_list = extract_code_func_and_input_from_data(gen_batch_output_A, self.tokenizer_A)
                     bs_a = len(gen_batch_output_A)
                     assert len(parse_ok_list) == bs_a
@@ -1405,9 +1488,28 @@ Briefly plan internally, then output **only** the two fenced blocks (no other te
                     gen_batch_output_A.non_tensor_batch["validate_ok"] = np.array(validate_ok_row, dtype=bool)
                     metrics["A/code_parse_ok_count"] = int(np.sum(gen_batch_output_A.non_tensor_batch["parse_ok"]))
                     metrics["A/code_validate_ok_count"] = int(np.sum(gen_batch_output_A.non_tensor_batch["validate_ok"]))
+                    # 模型 A：```python``` 代码块（解析出的 func_code）长度；与 reward.extract_code_func_and_input 一致
+                    py_char_lens = [len(func_code_list[i]) for i in range(bs_a)]
+                    metrics["A/python_block_char_len/mean"] = float(np.mean(py_char_lens)) if py_char_lens else 0.0
+                    metrics["A/python_block_char_len/max"] = float(np.max(py_char_lens)) if py_char_lens else 0.0
+                    ok_idx = [i for i in range(bs_a) if parse_ok_list[i]]
+                    if ok_idx:
+                        lens_ok = [len(func_code_list[i]) for i in ok_idx]
+                        metrics["A/python_block_char_len/mean_if_parse_ok"] = float(np.mean(lens_ok))
+                        toks_py = [
+                            self.tokenizer_A(func_code_list[i], add_special_tokens=False)["input_ids"]
+                            for i in ok_idx
+                        ]
+                        tok_lens = [len(t) for t in toks_py]
+                        metrics["A/python_block_token_len/mean_if_parse_ok"] = float(np.mean(tok_lens))
+                        metrics["A/python_block_token_len/max_if_parse_ok"] = float(np.max(tok_lens))
+                    else:
+                        metrics["A/python_block_char_len/mean_if_parse_ok"] = 0.0
+                        metrics["A/python_block_token_len/mean_if_parse_ok"] = 0.0
+                        metrics["A/python_block_token_len/max_if_parse_ok"] = 0.0
                     has_b = len(validated_tuples) > 0
 
-                with marked_timer("prepare_data_B", timing_raw, color="green"):
+                with marked_timer("time/prepare_data_B", timing_raw, color="green"):
                     # 勿在循环内对同一字符串反复 .format：第一次会把 {{...}} 变成 {...}，第二次会把示例里的 { 当成占位符触发 KeyError
                     prompt_B_template = """# Task: Deduce the output of a Python snippet given the code and input
 
@@ -1427,15 +1529,16 @@ Rules for formatting the answer inside the block:
 {INPUT}
 ```
 
-# Example (format only; your answer replaces the placeholder below)
+# Output (format only; your answer replaces the placeholder below)
 ```output
-{{'age': 20, 'city': 'New York'}}
+{{YOUR_OUTPUT_HERE}}
 ```
 """
                 tensors_B = defaultdict(list)
                 non_tensors_B = defaultdict(list)
                 for f, i, captured, _a_idx in validated_tuples:
                     prompt_B = prompt_B_template.format(SNIPPET=f, INPUT=i)
+                    prompt_B = self.tokenizer_B.apply_chat_template([{"role": "system", "content": "You are a helpful assistant. Please think step by step and generate the output of the code snippet with the given input."}, {"role": "user", "content": prompt_B}], add_generation_prompt=True, tokenize=False)
                     model_inputs_B = self.tokenizer_B(prompt_B, return_tensors="pt", add_special_tokens=False)
                     input_ids_B = model_inputs_B.pop("input_ids")
                     attention_mask_B = model_inputs_B.pop("attention_mask")
@@ -1445,7 +1548,7 @@ Rules for formatting the answer inside the block:
                         max_length=self.config.data.get("max_prompt_length", 2048),
                         pad_token_id=self.tokenizer_B.pad_token_id,
                         left_pad=True,
-                        truncation="error",
+                        truncation="left",
                     )
                     position_ids_B = compute_position_id_with_mask(attention_mask_B)
                     tensors_B["input_ids"].append(input_ids_B)
@@ -1473,7 +1576,7 @@ Rules for formatting the answer inside the block:
                     }
                     dp_size = self.actor_rollout_wg_B.world_size
                     gen_batch_padded_B, pad_size_B = pad_dataproto_to_divisor(gen_batch_B, dp_size)
-                    with marked_timer("generate_sequences_B", timing_raw, color="blue"):
+                    with marked_timer("time/generate_sequences_B", timing_raw, color="blue"):
                         gen_batch_output_B = self.actor_rollout_wg_B.generate_sequences(gen_batch_padded_B)
                         gen_batch_output_B.batch["response_mask"] = compute_response_mask(gen_batch_output_B)
                         if pad_size_B:
@@ -1481,13 +1584,26 @@ Rules for formatting the answer inside the block:
                         texts_b = self.tokenizer_B.batch_decode(gen_batch_output_B.batch["responses"], skip_special_tokens=True)
                         metrics["B/response_preview"] = texts_b
                         metrics["B/response_count"] = len(texts_b)
+                        rm_b = gen_batch_output_B.batch["response_mask"]
+                        resp_tok_lens = rm_b.sum(dim=-1).to(torch.float32)
+                        metrics["B/response_token_len/mean"] = float(resp_tok_lens.mean().item())
+                        metrics["B/response_token_len/max"] = float(resp_tok_lens.max().item())
+                        metrics["B/response_token_len/min"] = float(resp_tok_lens.min().item())
+                        char_lens_b = [len(t) for t in texts_b]
+                        metrics["B/response_char_len/mean"] = float(np.mean(char_lens_b)) if char_lens_b else 0.0
+                        metrics["B/response_char_len/max"] = float(np.max(char_lens_b)) if char_lens_b else 0.0
                         metrics["fit_competition/skip_B_step"] = 0.0
                 else:
                     metrics["fit_competition/skip_B_step"] = 1.0
                     metrics["B/response_count"] = 0
+                    metrics["B/response_token_len/mean"] = 0.0
+                    metrics["B/response_token_len/max"] = 0.0
+                    metrics["B/response_token_len/min"] = 0.0
+                    metrics["B/response_char_len/mean"] = 0.0
+                    metrics["B/response_char_len/max"] = 0.0
 
                 # reward：WordCountRewardManager 默认只返回一个 tensor；若写成 a,b = fn(...) 会对该 tensor 按第 0 维拆包，rollout.n>1 时会报 too many values to unpack
-                with marked_timer("reward", timing_raw, color="green"):
+                with marked_timer("time/reward", timing_raw, color="green"):
                     reward_AB = self.reward_fn(
                         gen_batch_output_A,
                         gen_batch_output_B if has_b else None,
@@ -1498,21 +1614,21 @@ Rules for formatting the answer inside the block:
                     extra_merged = reward_AB["reward_extra_info"]
                     metrics.update({f"AB/{k}": v for k, v in reduce_metrics(deepcopy(extra_merged)).items()})
 
-                with marked_timer("old_log_prob", timing_raw, color="purple"):
+                with marked_timer("time/old_log_prob", timing_raw, color="purple"):
                     old_log_prob_A = self.actor_rollout_wg_A.compute_log_prob(gen_batch_output_A)  # [B,L_r]
                     batch_A = gen_batch_output_A.union(old_log_prob_A)
                     if has_b:
                         old_log_prob_B = self.actor_rollout_wg_B.compute_log_prob(gen_batch_output_B)
                         batch_B = gen_batch_output_B.union(old_log_prob_B)
 
-                with marked_timer("ref", timing_raw, color="orange"):
+                with marked_timer("time/ref", timing_raw, color="orange"):
                     ref_log_prob_A = self.ref_policy_wg_A.compute_ref_log_prob(batch_A)
                     batch_A = batch_A.union(ref_log_prob_A)
                     if has_b:
                         ref_log_prob_B = self.ref_policy_wg_B.compute_ref_log_prob(batch_B)
                         batch_B = batch_B.union(ref_log_prob_B)
 
-                with marked_timer("adv", timing_raw, color="red"):
+                with marked_timer("time/adv", timing_raw, color="red"):
                     batch_A.batch["token_level_scores"] = reward_tensor_A
                     batch_A.batch["token_level_rewards"] = reward_tensor_A
 
@@ -1552,7 +1668,7 @@ Rules for formatting the answer inside the block:
 
 
 
-                with marked_timer("update_actor", timing_raw, color="orange"):
+                with marked_timer("time/update_actor", timing_raw, color="orange"):
                     # update_actor 内用 global_token_num 估计 MFU；与 verl/trainer/ppo/ray_trainer.py fit() 一致
                     batch_A.meta_info["global_token_num"] = torch.sum(batch_A.batch["attention_mask"], dim=-1).tolist()
                     self.actor_rollout_wg_A.update_actor(batch_A)
@@ -1567,27 +1683,20 @@ Rules for formatting the answer inside the block:
                 gsm8k_every = self._gsm8k_b_eval_interval()
                 if gsm8k_every > 0 and self.global_steps % gsm8k_every == 0:
                     timing_gsm8k: dict = {}
-                    with marked_timer("gsm8k_b_validate", timing_gsm8k, color="cyan"):
+                    with marked_timer("time/gsm8k_b_validate", timing_gsm8k, color="cyan"):
                         gsm8k_metrics = self._my_validate()
                     if gsm8k_metrics:
                         log_payload = dict(gsm8k_metrics)
                         log_payload.update({f"timing_s/{k}": v for k, v in timing_gsm8k.items()})
                         logger.log(data=log_payload, step=self.global_steps)
 
-                # 固定目录覆盖写入 = 只保留最新；latest_checkpointed_iteration.txt 标注与 save_checkpoint(global_step) 一致的步数
                 save_freq = self.config.trainer.get("save_freq", -1)
                 do_save = save_freq > 0 and (
                     self.global_steps % save_freq == 0 or self.global_steps >= self.total_training_steps
                 )
                 if do_save:
-                    ckpt_dir_a = "/data0/yy/verl/checkpoint_A"
-                    ckpt_dir_b = "/data0/yy/verl/checkpoint_B"
-                    with marked_timer("save_checkpoint", timing_raw, color="green"):
-                        self.actor_rollout_wg_A.save_checkpoint(ckpt_dir_a, None, self.global_steps)
-                        self._write_latest_checkpoint_iteration_file(ckpt_dir_a, self.global_steps)
-                        if has_b:
-                            self.actor_rollout_wg_B.save_checkpoint(ckpt_dir_b, None, self.global_steps)
-                            self._write_latest_checkpoint_iteration_file(ckpt_dir_b, self.global_steps)
+                    with marked_timer("time/save_checkpoint", timing_raw, color="green"):
+                        self._save_checkpoint_competition()
 
         
     def fit(self):

@@ -53,14 +53,30 @@ class Tracking:
             import wandb
 
             settings = None
-            if config and config["trainer"].get("wandb_proxy", None):
+            if config and config.get("trainer", {}).get("wandb_proxy", None):
                 settings = wandb.Settings(https_proxy=config["trainer"]["wandb_proxy"])
-            wandb.init(project=project_name, name=experiment_name, config=config, settings=settings)
+
+            init_kwargs = {
+                "project": project_name,
+                "name": experiment_name,
+                "config": config,
+            }
+            if settings is not None:
+                init_kwargs["settings"] = settings
+
+            trainer_cfg = config.get("trainer", {}) if config else {}
+            run_id = trainer_cfg.get("wandb_run_id") or os.environ.get("WANDB_RUN_ID")
+            if run_id:
+                init_kwargs["id"] = str(run_id)
+                resume = trainer_cfg.get("wandb_resume")
+                if resume is None:
+                    resume = os.environ.get("WANDB_RESUME", "allow")
+                init_kwargs["resume"] = resume
+
+            wandb.init(**init_kwargs)
             self.logger["wandb"] = wandb
 
         if "mlflow" in default_backend:
-            import os
-
             import mlflow
 
             MLFLOW_TRACKING_URI = os.environ.get("MLFLOW_TRACKING_URI", None)
@@ -75,8 +91,6 @@ class Tracking:
             self.logger["mlflow"] = _MlflowLoggingAdapter()
 
         if "swanlab" in default_backend:
-            import os
-
             import swanlab
 
             SWANLAB_API_KEY = os.environ.get("SWANLAB_API_KEY", None)
@@ -97,8 +111,6 @@ class Tracking:
             self.logger["swanlab"] = swanlab
 
         if "vemlp_wandb" in default_backend:
-            import os
-
             import volcengine_ml_platform
             from volcengine_ml_platform import wandb as vemlp_wandb
 

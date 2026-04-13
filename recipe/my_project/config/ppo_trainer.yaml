@@ -981,6 +981,16 @@ trainer:
   # Path to resume training from (only used when resume_mode is "resume_path")
   resume_from_path: null
 
+  # Weights & Biases: append metrics to an existing run (copy run id from W&B UI URL / overview)
+  wandb_run_id: null
+
+  # When wandb_run_id is set (or env WANDB_RUN_ID): allow | must | never | auto — see wandb.init(resume=...)
+  wandb_resume: allow
+
+  # Same W&B run + resume from an old ckpt: add to every logged step (wandb/vemlp_wandb only). Env WANDB_LOG_STEP_OFFSET overrides.
+  # Set to (next_desired_wandb_step - global_steps_after_load), e.g. 530 - 250 = 280 if wandb max was 529 and ckpt is step 250.
+  wandb_log_step_offset: 0
+
   # Whether to run validation before training begins
   val_before_train: True
 

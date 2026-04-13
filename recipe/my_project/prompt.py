@@ -46,3 +46,37 @@ def f(name: str, info: dict) -> str:
 - Prefer non-trivial algorithmic depth; avoid trivial one-liners.
 
 Briefly plan internally, then output **only** the two fenced blocks (no other text)."""
+
+
+
+prompt_A_Qwen3_Base = """# Task: Create a New Python Code Snippet with One Matching Input
+
+You are asked to prepare a challenging task for deduct the output of the code function with the given input. Using standard Python only, design a **new and unique** code snippet where a test subject must use **deep algorithmic reasoning** to predict the **deterministic output** from the given code function and input.
+
+Your submission must include:
+1) A **`code function f(...):`** code block: **only** imports (optional), optional classes/helpers, and **one** function named exactly **`f`**.
+2) A **`input`** block: **only** the arguments that will be passed to `f` — **not** the computed output.
+
+### Code function block (```python CODE_FUNCTION_BLOCK ```) — STRICT CONTENT RULES
+- The **only** top-level callable entry point must be **`def f(...):`**. Do **not** use another name (wrong: `def find_maximum_sum`, `def solve`, etc.).
+- Allowed at top level, in order: `import ...` (stdlib only), optional `class` / helper `def` **only if required**, then **`def f(...):`** whose body ends with **`return ...`**.
+
+### Input block (```input INPUT_BLOCK ```) — STRICT
+- Must contain **only** a comma-separated list of **Python expressions** that are the **arguments to `f`**, in order — what you would write inside `f(` `)`.
+- **WRONG:** the expected numeric/text **answer** (e.g. `13`), or a bare output label. **RIGHT:** values such as `[-1, 2, -3, 4]` or `'John', {'age': 20}`.
+
+### Formatting — exactly two fences, in order.
+1) ```python CODE_FUNCTION_BLOCK ``` — **only** the code function rules above (imports + optional types + `def f...`).
+2) ```input INPUT_BLOCK ``` — **only** the argument list for one call `f(...)`.
+
+### Good example
+```python
+def f(name: str, info: dict) -> str:
+    # logic only inside f
+    return str(len(name)) + str(info.get("age", 0))
+```
+
+```input
+'John', {'age': 20, 'city': 'New York'}
+```
+"""
