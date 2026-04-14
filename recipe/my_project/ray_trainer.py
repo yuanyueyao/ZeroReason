@@ -62,7 +62,7 @@ from verl.utils.model import compute_position_id_with_mask
 
 from recipe.my_project.reward import extract_code_func_and_input_from_data, validate_python_code_task
 WorkerType = Type[Worker]
-from recipe.my_project.prompt import prompt_A_Qwen3_Base
+from recipe.my_project.prompt import prompt_A_Base
 
 class Role(Enum):
     """
@@ -307,7 +307,6 @@ class MyTrainer:
         processor=None,
         reward_fn=None,
         val_reward_fn=None,
-        val_reward_fn_gsm8k_b=None,
         train_dataset: Optional[Dataset] = None,
         val_dataset: Optional[Dataset] = None,
         collate_fn=None,
@@ -339,10 +338,13 @@ class MyTrainer:
         self.tokenizer_B = tokenizer_B
         self.processor = processor
         self.config = config
+        # Full config for model-B workers; only difference enforced here: no entropy regularizer on B's actor.
+        self.config_B = OmegaConf.create(OmegaConf.to_container(config, resolve=True))
+        with open_dict(self.config_B):
+            self.config_B.actor_rollout_ref.actor.entropy_coeff = 0
+
         self.reward_fn = reward_fn
         self.val_reward_fn = val_reward_fn
-        # Rule-based GSM8K scoring (NaiveRewardManager) for periodic eval of actor B only.
-        self.val_reward_fn_gsm8k_b = val_reward_fn_gsm8k_b
 
         self.hybrid_engine = config.actor_rollout_ref.hybrid_engine
         assert self.hybrid_engine, "Currently, only support hybrid engine"
@@ -567,6 +569,12 @@ class MyTrainer:
                     self.config.actor_rollout_ref.actor.optim.total_training_steps = total_training_steps
                 if OmegaConf.select(self.config, "critic.optim"):
                     self.config.critic.optim.total_training_steps = total_training_steps
+            OmegaConf.set_struct(self.config_B, True)
+            with open_dict(self.config_B):
+                if OmegaConf.select(self.config_B, "actor_rollout_ref.actor.optim"):
+                    self.config_B.actor_rollout_ref.actor.optim.total_training_steps = total_training_steps
+                if OmegaConf.select(self.config_B, "critic.optim"):
+                    self.config_B.critic.optim.total_training_steps = total_training_steps
         except Exception as e:
             print(f"Warning: Could not set total_training_steps in config. Structure missing? Error: {e}")
 
@@ -633,7 +641,7 @@ class MyTrainer:
 
     def _my_validate(self) -> dict:
         """Run val_dataloader with **actor_rollout_wg_B** + naive GSM8K rule reward; metrics prefixed with ``val-B-gsm8k/``."""
-        if self.val_reward_fn_gsm8k_b is None:
+        if self.val_reward_fn is None:
             return {}
 
         data_source_lst = []
@@ -703,7 +711,7 @@ class MyTrainer:
 
             test_batch = test_batch.union(test_output_gen_batch)
 
-            result = self.val_reward_fn_gsm8k_b(test_batch, return_dict=True)
+            result = self.val_reward_fn(test_batch, return_dict=True)
             reward_tensor = result["reward_tensor"]
             scores = reward_tensor.sum(-1).cpu().tolist()
             sample_scores.extend(scores)
@@ -890,7 +898,7 @@ class MyTrainer:
         resource_pool = self.resource_pool_manager.get_resource_pool(Role.ActorRollout_B)
         actor_rollout_cls_B = RayClassWithInitArgs(
             cls=self.role_worker_mapping[Role.ActorRollout_B],
-            config=self.config.actor_rollout_ref,
+            config=self.config_B.actor_rollout_ref,
             role="actor_rollout",
         )
 
@@ -902,7 +910,7 @@ class MyTrainer:
         self.resource_pool_to_cls[resource_pool]["ref_policy_A"] = ref_policy_cls_A
 
         resource_pool = self.resource_pool_manager.get_resource_pool(Role.RefPolicy_B)
-        ref_policy_cls_B = RayClassWithInitArgs(self.role_worker_mapping[Role.RefPolicy_B], config=self.config.actor_rollout_ref, role="ref")
+        ref_policy_cls_B = RayClassWithInitArgs(self.role_worker_mapping[Role.RefPolicy_B], config=self.config_B.actor_rollout_ref, role="ref")
         self.resource_pool_to_cls[resource_pool]["ref_policy_B"] = ref_policy_cls_B
 
         # initialize WorkerGroup
@@ -1368,7 +1376,7 @@ class MyTrainer:
         progress_bar = tqdm(total=self.total_training_steps, initial=self.global_steps, desc="Training Progress")
 
         # 与 fit() 中 val_before_train 一致；双模型下训练前评测用 B + GSM8K（_my_validate），而非单路 _validate。
-        if self.val_reward_fn_gsm8k_b is not None and self.config.trainer.get("val_before_train", True):
+        if self.val_reward_fn is not None and self.config.trainer.get("val_before_train", True):
             val_metrics = self._my_validate()
             assert val_metrics, f"{val_metrics=}"
             pprint(f"Initial B/GSM8K validation metrics: {val_metrics}")
@@ -1426,7 +1434,7 @@ def f(name: str, info: dict) -> str:
 
 Briefly plan internally, then output **only** the two fenced blocks (no other text)."""
         
-        raw_prompt_A = self.tokenizer_A.apply_chat_template([{"role": "system", "content": "You are a helpful assistant. Please think step by step and generate a new and unique code snippet with one matching input."}, {"role": "user", "content": prompt_A_Qwen3_Base}], add_generation_prompt=True, tokenize=False)
+        raw_prompt_A = self.tokenizer_A.apply_chat_template([{"role": "system", "content": "You are a helpful assistant. Please think step by step and generate a new and unique code snippet with one matching input."}, {"role": "user", "content": prompt_A_Base}], add_generation_prompt=True, tokenize=False)
         model_inputs_A = self.tokenizer_A(raw_prompt_A, return_tensors="pt", add_special_tokens=False)
         input_ids_A = model_inputs_A.pop("input_ids")
         attention_mask_A = model_inputs_A.pop("attention_mask")

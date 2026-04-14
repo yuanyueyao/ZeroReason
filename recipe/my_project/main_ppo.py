@@ -20,11 +20,10 @@ import socket
 
 import hydra
 import ray
-from omegaconf import OmegaConf, open_dict
+from omegaconf import OmegaConf
 
 from recipe.my_project.ray_trainer import MyTrainer
 from recipe.my_project.reward import CompetitionRewardManager
-from verl.trainer.ppo.reward import load_reward_manager
 
 
 @hydra.main(config_path="config", config_name="ppo_trainer", version_base=None)
@@ -145,20 +144,17 @@ class TaskRunner:
             rollout_n=config.actor_rollout_ref.rollout.n,
             **config.reward_model.get("reward_kwargs", {}),
         )
-        val_reward_fn = CompetitionRewardManager(
-            tokenizer_A,
-            1,
-            tokenizer_B=tokenizer_B,
-            rollout_n=config.actor_rollout_ref.rollout.n,
-            **config.reward_model.get("reward_kwargs", {}),
+        # Naive reward on model B for _my_validate: GSM8K (rule) + MBPP (exec asserts); see val_b_compute_score.
+        from verl.workers.reward_manager import NaiveRewardManager
+
+        from recipe.my_project.val_b_compute_score import val_b_compute_score
+
+        val_reward_fn = NaiveRewardManager(
+            tokenizer=tokenizer_B,
+            num_examine=2,
+            compute_score=val_b_compute_score,
+            reward_fn_key=config.data.reward_fn_key,
         )
-        # Naive + default_compute_score for periodic GSM8K eval of model B (see MyTrainer._my_validate).
-        gsm8k_b_cfg = OmegaConf.create(OmegaConf.to_container(config, resolve=True))
-        with open_dict(gsm8k_b_cfg):
-            gsm8k_b_cfg.reward_model.reward_manager = "naive"
-        val_reward_fn_gsm8k_b = load_reward_manager(gsm8k_b_cfg, tokenizer_B, num_examine=2)
-        # reward_fn = load_reward_manager(config, tokenizer_A, num_examine=0, **config.reward_model.get("reward_kwargs", {}))
-        # val_reward_fn = load_reward_manager(config, tokenizer_A, num_examine=1, **config.reward_model.get("reward_kwargs", {}))
         resource_pool_manager = ResourcePoolManager(resource_pool_spec=resource_pool_spec, mapping=mapping)
         print("reward_fn", reward_fn)
         print("val_reward_fn", val_reward_fn)
@@ -181,7 +177,6 @@ class TaskRunner:
             ray_worker_group_cls=ray_worker_group_cls,
             reward_fn=reward_fn,
             val_reward_fn=val_reward_fn,
-            val_reward_fn_gsm8k_b=val_reward_fn_gsm8k_b,
             train_dataset=train_dataset,
             val_dataset=val_dataset,
             collate_fn=collate_fn,

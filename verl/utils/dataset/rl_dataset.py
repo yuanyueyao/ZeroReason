@@ -260,7 +260,7 @@ class RLHFDataset(Dataset):
                         {
                             "role": "system",
                             "content": (
-                                "You are a helpful assistant. Please think step by step and output your answer"
+                                "Please reason step by step, and put your final answer within \\boxed{}."
                             ),
                         },
                         *messages,

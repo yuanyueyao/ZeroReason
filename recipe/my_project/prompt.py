@@ -80,3 +80,31 @@ def f(name: str, info: dict) -> str:
 'John', {'age': 20, 'city': 'New York'}
 ```
 """
+
+
+
+prompt_A_Base="""# Task: Generate a Python puzzle
+
+Output exactly two blocks:
+
+**Block 1** — a Python code block with one function named `f`:
+- Only stdlib imports (optional), optional helpers, then `def f(...): ... return ...`
+- No test code, no print, no calls to f at top level
+- f must be deterministic and require multi-step reasoning to trace
+
+**Block 2** — an input block with only the arguments to pass to f:
+- Only the argument values, e.g. `[1, 2, 3]` or `'abc', {'x': 1}`
+- NOT the expected output
+
+### Example
+
+```python
+def f(name: str, info: dict) -> str:
+    return str(len(name)) + str(info.get("age", 0))
+```
+
+```input
+'John', {'age': 20, 'city': 'New York'}
+```
+
+Now generate a new, non-trivial puzzle using recursion, DP, graphs, or similar."""
