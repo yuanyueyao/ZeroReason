@@ -21,8 +21,6 @@ import re
 
 import datasets
 
-from verl.utils.hdfs_io import copy, makedirs
-
 
 def extract_solution(solution_str):
     solution = re.search("#### (\\-?[0-9\\.\\,]+)", solution_str)
@@ -95,6 +93,8 @@ if __name__ == "__main__":
     test_dataset.to_parquet(os.path.join(local_dir, "test.parquet"))
 
     if hdfs_dir is not None:
+        from verl.utils.hdfs_io import copy, makedirs
+
         makedirs(hdfs_dir)
 
         copy(src=local_dir, dst=hdfs_dir)

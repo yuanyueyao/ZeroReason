@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import ast
 import os
 import re
 import subprocess
@@ -24,6 +25,79 @@ def extract_python_code(solution_str: str) -> str | None:
     if m:
         return m.group(1).strip()
     return solution_str.strip()
+
+
+def _first_top_level_function_name(src: str) -> str | None:
+    """First ``def`` at module level (MBPP reference / student entry point)."""
+    try:
+        tree = ast.parse(src)
+    except SyntaxError:
+        return None
+    for node in tree.body:
+        if isinstance(node, ast.FunctionDef):
+            return node.name
+    return None
+
+
+def _is_dunder_name_main_guard(node: ast.If) -> bool:
+    t = node.test
+    if not isinstance(t, ast.Compare) or len(t.ops) != 1 or not isinstance(t.ops[0], ast.Eq):
+        return False
+    if not isinstance(t.left, ast.Name) or t.left.id != "__name__":
+        return False
+    if len(t.comparators) != 1:
+        return False
+    c = t.comparators[0]
+    if isinstance(c, ast.Constant) and isinstance(c.value, str):
+        return c.value == "__main__"
+    return False
+
+
+def strip_mbpp_student_code(src: str) -> str:
+    """
+    Drop module-level side effects that break MBPP harness execution:
+
+    - bare expressions (e.g. ``check_solution()``, demo ``print(...)``)
+    - ``if __name__ == "__main__":`` blocks
+
+    Official asserts are appended *after* this block; those must be the first code that runs
+    after definitions (besides imports / assignments).
+    """
+    try:
+        tree = ast.parse(src)
+    except SyntaxError:
+        return src
+    new_body: list[ast.stmt] = []
+    for node in tree.body:
+        if isinstance(node, ast.If) and _is_dunder_name_main_guard(node):
+            continue
+        if isinstance(node, ast.Expr):
+            continue
+        new_body.append(node)
+    if not new_body:
+        return src
+    out = ast.Module(body=new_body, type_ignores=getattr(tree, "type_ignores", []))
+    try:
+        return ast.unparse(out)
+    except Exception:
+        return src
+
+
+def maybe_entrypoint_alias_line(reference_code: str, student_code: str) -> str:
+    """
+    MBPP ``test_list`` asserts call the **reference** function name (e.g. ``remove_Occ``).
+    Models often rename (e.g. ``remove_first_last_occurrence``). Emit ``ref = student`` when
+    both sides expose a single top-level name and they differ.
+    """
+    ref = (reference_code or "").strip()
+    stu = (student_code or "").strip()
+    if not ref or not stu:
+        return ""
+    rname = _first_top_level_function_name(ref)
+    sname = _first_top_level_function_name(stu)
+    if not rname or not sname or rname == sname:
+        return ""
+    return f"{rname} = {sname}"
 
 
 def run_mbpp_exec_checks(
@@ -92,8 +166,10 @@ def compute_mbpp_score_dict(
     """
     Return a dict compatible with NaiveRewardManager: must include ``score`` (float).
 
-    Uses ``extra_info["mbpp"]`` for test lists; ``ground_truth`` is unused for pass/fail
-    (reference is only for logging / other metrics).
+    Uses ``extra_info["mbpp"]`` for test lists. ``ground_truth`` (reference solution) is used to:
+
+    - strip module-level demo calls / ``__main__`` blocks from student code;
+    - add ``<ref_name> = <student_name>`` when MBPP asserts use the dataset entrypoint name.
     """
     extra_info = extra_info or {}
     mbpp = extra_info.get("mbpp")
@@ -108,8 +184,13 @@ def compute_mbpp_score_dict(
     if user is None:
         return {"score": 0.0, "mbpp_ok": False, "mbpp_err": "no_code_extracted"}
 
+    ref = (ground_truth or "").strip() or str((extra_info or {}).get("reference_code") or "").strip()
+    student = strip_mbpp_student_code(user)
+    alias = maybe_entrypoint_alias_line(ref, student)
+    body = student if not alias else f"{student}\n\n{alias}"
+
     ok, err = run_mbpp_exec_checks(
-        user,
+        body,
         test_setup_code=setup,
         test_list=test_list,
         challenge_test_list=challenge,
