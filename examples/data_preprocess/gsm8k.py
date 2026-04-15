@@ -37,7 +37,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--local_dir",
         "--local_save_dir",
-        default="~/data/gsm8k",
+        default="/data/yy/verl/data/gsm8k",
         dest="local_dir",
         help="Output directory for train.parquet and test.parquet (same as --local_save_dir).",
     )

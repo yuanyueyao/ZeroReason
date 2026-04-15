@@ -12,6 +12,23 @@ from recipe.my_project.mbpp_exec import compute_mbpp_score_dict
 MBPP_DATA_SOURCE = "google-research-datasets/mbpp"
 
 
+def _normalize_non_mbpp_result(res):
+    """
+    NaiveRewardManager appends every key in the returned dict per sample; mixed val sets
+    (GSM8K + MBPP) require the same keys on every row so ``reward_extra_info`` lists match
+    ``len(data)`` and ``process_validation_metrics`` can index by sample.
+
+    ``mbpp_ok`` uses NaN on non-MBPP rows so aggregations skip misleading means; ``mbpp_err``
+    uses ``""`` so metric_utils treats the series as string-like where appropriate.
+    """
+    if isinstance(res, dict):
+        out = dict(res)
+        out.setdefault("mbpp_ok", float("nan"))
+        out.setdefault("mbpp_err", "")
+        return out
+    return {"score": float(res), "mbpp_ok": float("nan"), "mbpp_err": ""}
+
+
 def val_b_compute_score(
     data_source,
     solution_str,
@@ -31,7 +48,7 @@ def val_b_compute_score(
         return compute_mbpp_score_dict(solution_str, ground_truth, extra_info)
     from verl.utils.reward_score import default_compute_score
 
-    return default_compute_score(
+    res = default_compute_score(
         data_source,
         solution_str,
         ground_truth,
@@ -40,3 +57,4 @@ def val_b_compute_score(
         concurrent_semaphore,
         memory_limit_mb,
     )
+    return _normalize_non_mbpp_result(res)

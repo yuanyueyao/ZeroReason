@@ -2,17 +2,17 @@
 # It outperforms the Qwen2 7B base model by two percentage points on the test set of GSM8K.
 
 set -x
-export CUDA_VISIBLE_DEVICES=6,7
+export CUDA_VISIBLE_DEVICES=0,1
 python3 -m recipe.my_project.main_ppo \
     algorithm.adv_estimator=grpo \
-    data.train_files=/data0/yy/verl/data/gsm8k/test.parquet \
-    data.val_files="[/data0/yy/verl/data/gsm8k/test.parquet,/data0/yy/verl/data/mbpp_parquet/test.parquet]" \
+    data.train_files=/data/yy/verl/data/gsm8k/test.parquet \
+    data.val_files="[/data/yy/verl/data/gsm8k/test.parquet,/data/yy/verl/data/mbpp/test.parquet]" \
     data.train_batch_size=1024 \
     data.max_prompt_length=1024 \
-    data.max_response_length=2048 \
+    data.max_response_length=1024 \
     data.filter_overlong_prompts=True \
     data.truncation='error' \
-    actor_rollout_ref.model.path=/data0/yy/model/Qwen3-4B-Base \
+    actor_rollout_ref.model.path=/data/yy/model/Qwen3-4B-Base \
     actor_rollout_ref.actor.optim.lr=1e-6 \
     actor_rollout_ref.model.use_remove_padding=True \
     actor_rollout_ref.actor.ppo_mini_batch_size=256 \
@@ -40,11 +40,11 @@ python3 -m recipe.my_project.main_ppo \
     trainer.n_gpus_per_node=1 \
     trainer.nnodes=1 \
     trainer.save_freq=100 \
-    trainer.test_freq=10 \
+    trainer.test_freq=20 \
     trainer.total_epochs=15 \
     trainer.total_training_steps=1200 \
     trainer.val_before_train=True \
-    trainer.default_local_dir=/data0/yy/verl/checkpoints/Qwen3-4B-Base $@
+    trainer.default_local_dir=/data/yy/verl/checkpoints/Qwen3-4B-Base $@
     # trainer.resume_mode=auto \
     # trainer.wandb_run_id=23coh2so \
     # trainer.wandb_resume=allow $@

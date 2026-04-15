@@ -90,7 +90,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--local_dir",
         "--local_save_dir",
-        default="~/data/mbpp",
+        default="/data/yy/verl/data/mbpp",
         dest="local_dir",
         help="Directory for train.parquet, test.parquet, and optional validation.parquet.",
     )

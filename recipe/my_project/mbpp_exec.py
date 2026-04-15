@@ -116,7 +116,6 @@ def compute_mbpp_score_dict(
         timeout_sec=timeout_sec,
     )
     score = 1.0 if ok else 0.0
-    out: dict = {"score": score, "mbpp_ok": ok}
-    if err:
-        out["mbpp_err"] = err[:300]
-    return out
+    # Always return the same keys; use "" when no stderr (avoids None in numpy stats paths).
+    err_s = err[:300] if err else ""
+    return {"score": score, "mbpp_ok": ok, "mbpp_err": err_s}
