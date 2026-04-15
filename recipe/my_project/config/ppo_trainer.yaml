@@ -878,6 +878,18 @@ algorithm:
     # Target KL divergence (used for adaptive controller)
     target_kl: 0.1
 
+  # Diversity penalty for Model A (discourages within-group code repetition).
+  # Set coeff > 0 to enable.  method is one of: jaccard | ngram | edit_distance | ast | entropy | combined
+  # See recipe/my_project/diversity.py for details on each method.
+  diversity_penalty_coeff: 0.0
+
+  # Penalty method to use (see diversity.py _PENALTY_REGISTRY)
+  diversity_penalty_method: jaccard
+
+  # Extra keyword arguments forwarded to the selected penalty function.
+  # e.g. for ngram: {n: 3};  for combined: {weights: {jaccard: 0.5, ast: 0.5}}
+  diversity_penalty_kwargs: {}
+
   # Whether to enable preference feedback PPO
   use_pf_ppo: False
 

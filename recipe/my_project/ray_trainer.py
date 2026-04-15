@@ -61,6 +61,7 @@ from verl.utils.tracking import ValidationGenerationsLogger
 from verl.utils.model import compute_position_id_with_mask
 
 from recipe.my_project.reward import extract_code_func_and_input_from_data, validate_python_code_task
+from recipe.my_project.diversity import compute_group_diversity_penalty
 WorkerType = Type[Worker]
 from recipe.my_project.prompt import prompt_A_Base
 
@@ -1621,6 +1622,75 @@ Rules for formatting the answer inside the block:
                     reward_tensor_B = reward_AB.get("reward_tensor_B")
                     extra_merged = reward_AB["reward_extra_info"]
                     metrics.update({f"AB/{k}": v for k, v in reduce_metrics(deepcopy(extra_merged)).items()})
+
+                # ── 多样性惩罚（仅作用于 A） ──────────────────────────────
+                # 配置项（均可在 yaml / 命令行覆盖，默认关闭）：
+                #   algorithm.diversity_penalty_coeff: 0.0        # 0 = 关闭
+                #   algorithm.diversity_penalty_method: "jaccard"  # 见 diversity.py
+                #   algorithm.diversity_penalty_kwargs: {}         # 透传给具体方法
+                with marked_timer("time/diversity_penalty", timing_raw, color="cyan"):
+                    _div_coeff = float(self.config.algorithm.get("diversity_penalty_coeff", 0.0))
+                    if _div_coeff > 0.0:
+                        _div_method = str(self.config.algorithm.get("diversity_penalty_method", "jaccard"))
+                        _div_kwargs = dict(self.config.algorithm.get("diversity_penalty_kwargs") or {})
+                        _rollout_n = self.config.actor_rollout_ref.rollout.n
+                        # num_examine：与 CompetitionRewardManager 保持一致，打印前 N 个 GRPO 组
+                        _div_num_examine: int = getattr(self.reward_fn, "num_examine", 0)
+
+                        # 计算每条样本的最后有效 response token 位置
+                        _prompt_len_A = gen_batch_output_A.batch["prompts"].shape[-1]
+                        _resp_lengths_A = (
+                            gen_batch_output_A.batch["attention_mask"][:, _prompt_len_A:]
+                            .sum(dim=-1)
+                            .long()
+                        )  # [bs_a]
+
+                        # 逐 GRPO 组计算多样性惩罚，同时打印前 _div_num_examine 组的详情
+                        _all_penalties: list[float] = []
+                        for _g_idx, _g_start in enumerate(range(0, bs_a, _rollout_n)):
+                            _g_end = min(_g_start + _rollout_n, bs_a)
+                            _group_codes = func_code_list[_g_start:_g_end]
+                            _group_pen = compute_group_diversity_penalty(
+                                _group_codes, method=_div_method, **_div_kwargs
+                            )
+                            _all_penalties.extend(_group_pen)
+
+                            # ── 打印（与 CompetitionRewardManager 风格一致） ──
+                            if _div_num_examine > 0 and _g_idx < _div_num_examine:
+                                _base_reward_slice = [
+                                    float(reward_tensor_A[_g_start + _k,
+                                          max(int(_resp_lengths_A[_g_start + _k]) - 1, 0)])
+                                    for _k in range(_g_end - _g_start)
+                                ]
+                                print("================================================")
+                                print(f"[diversity_penalty] group={_g_idx}  "
+                                      f"method={_div_method}  coeff={_div_coeff}")
+                                for _k, (_code, _pen_val, _base_r) in enumerate(
+                                    zip(_group_codes, _group_pen, _base_reward_slice)
+                                ):
+                                    _preview = (_code[:120] + "...") if len(_code) > 120 else _code
+                                    _preview = _preview.replace("\n", "\\n")
+                                    print(f"  sample[{_k}]  penalty={_pen_val:.4f}  "
+                                          f"base_reward={_base_r:.4f}  "
+                                          f"final_reward={_base_r - _div_coeff * _pen_val:.4f}  "
+                                          f"code_preview={_preview!r}")
+                                _g_pen_arr = _group_pen
+                                print(f"  group_stats: mean={np.mean(_g_pen_arr):.4f}  "
+                                      f"max={np.max(_g_pen_arr):.4f}  "
+                                      f"min={np.min(_g_pen_arr):.4f}")
+                                print("================================================")
+
+                        # 叠加到 reward_tensor_A 的最后有效 token 位置
+                        for _i, (_pen, _vlen) in enumerate(zip(_all_penalties, _resp_lengths_A)):
+                            if _vlen > 0:
+                                reward_tensor_A[_i, int(_vlen) - 1] -= _div_coeff * _pen
+
+                        metrics["A/diversity_penalty/mean"] = float(np.mean(_all_penalties))
+                        metrics["A/diversity_penalty/max"] = float(np.max(_all_penalties))
+                        metrics["A/diversity_penalty/min"] = float(np.min(_all_penalties))
+                        metrics["A/diversity_penalty/coeff"] = _div_coeff
+                        metrics["A/diversity_penalty/method"] = _div_method
+                # ── 多样性惩罚结束 ────────────────────────────────────────
 
                 with marked_timer("time/old_log_prob", timing_raw, color="purple"):
                     old_log_prob_A = self.actor_rollout_wg_A.compute_log_prob(gen_batch_output_A)  # [B,L_r]

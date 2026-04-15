@@ -5,6 +5,9 @@ set -x
 export CUDA_VISIBLE_DEVICES=0,1
 python3 -m recipe.my_project.main_ppo \
     algorithm.adv_estimator=grpo \
+    algorithm.diversity_penalty_coeff=0.1 \
+    algorithm.diversity_penalty_method=jaccard \
+    algorithm.diversity_penalty_kwargs={} \
     data.train_files=/data/yy/verl/data/gsm8k/test.parquet \
     data.val_files="[/data/yy/verl/data/gsm8k/test.parquet,/data/yy/verl/data/mbpp/test.parquet]" \
     data.train_batch_size=1024 \
