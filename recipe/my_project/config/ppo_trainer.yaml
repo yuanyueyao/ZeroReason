@@ -890,6 +890,12 @@ algorithm:
   # e.g. for ngram: {n: 3};  for combined: {weights: {jaccard: 0.5, ast: 0.5}}
   diversity_penalty_kwargs: {}
 
+  # Number of past training rounds to keep in the cross-round memory window.
+  # The per-sample combined penalty = group_penalty × memory_similarity,
+  # where memory_similarity is the mean similarity to all codes in the window.
+  # Set to 0 to disable cross-round penalty (pure within-group only).
+  diversity_memory_window: 10
+
   # Whether to enable preference feedback PPO
   use_pf_ppo: False
 

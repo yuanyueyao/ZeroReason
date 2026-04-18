@@ -355,6 +355,9 @@ class CompetitionRewardManager:
                 else:
                     r_b = 0.0
 
+                if int(vlen) < 20 :
+                    r_b = min(r_b, 0.0)
+
                 if self.num_examine > 0 and j < self.num_examine:
                     print("================================================")
                     print("[B response]", resp_str)

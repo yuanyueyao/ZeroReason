@@ -9,16 +9,19 @@ if [ -d /usr/local/cuda/lib64 ]; then
   export LIBRARY_PATH="${CUDA_HOME}/lib64${LIBRARY_PATH:+:$LIBRARY_PATH}"
   export LD_LIBRARY_PATH="${CUDA_HOME}/lib64${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 fi
+
+ # data.val_files="[/root/autodl-tmp/verl/data/gsm8k/test.parquet,/root/autodl-tmp/verl/data/mbpp/test.parquet]" \
 python3 -m recipe.my_project.main_ppo \
     algorithm.adv_estimator=grpo \
-    algorithm.diversity_penalty_coeff=0.1 \
+    algorithm.diversity_penalty_coeff=0.4 \
     algorithm.diversity_penalty_method=jaccard \
     algorithm.diversity_penalty_kwargs={} \
+    algorithm.diversity_memory_window=5 \
     data.train_files=/root/autodl-tmp/verl/data/gsm8k/test.parquet \
-    data.val_files="[/root/autodl-tmp/verl/data/gsm8k/test.parquet,/root/autodl-tmp/verl/data/mbpp/test.parquet]" \
+    data.val_files=/root/autodl-tmp/verl/data/gsm8k/test.parquet \
     data.train_batch_size=1024 \
     data.max_prompt_length=1024 \
-    data.max_response_length=1024 \
+    data.max_response_length=2048 \
     data.filter_overlong_prompts=True \
     data.truncation='error' \
     actor_rollout_ref.model.path=/root/autodl-tmp/models/Qwen2.5-1.5B-Instruct \
@@ -38,14 +41,14 @@ python3 -m recipe.my_project.main_ppo \
     actor_rollout_ref.rollout.name=vllm \
     actor_rollout_ref.rollout.gpu_memory_utilization=0.4 \
     actor_rollout_ref.rollout.max_num_batched_tokens=4096 \
-    actor_rollout_ref.rollout.n=5 \
+    actor_rollout_ref.rollout.n=32 \
     actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu=32 \
     actor_rollout_ref.ref.fsdp_config.param_offload=True \
     algorithm.use_kl_in_reward=False \
     trainer.critic_warmup=0 \
     trainer.logger=['console','wandb'] \
     trainer.project_name='verl_fit_competition' \
-    trainer.experiment_name='test_Qwen2.5-1.5B-Instruct' \
+    trainer.experiment_name='history_window_5_diversity_penalty_0.4' \
     trainer.n_gpus_per_node=1 \
     trainer.nnodes=1 \
     trainer.save_freq=-1 \

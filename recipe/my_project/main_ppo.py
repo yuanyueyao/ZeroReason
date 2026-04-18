@@ -139,7 +139,7 @@ class TaskRunner:
         # Load the reward manager for training and validation.
         reward_fn = CompetitionRewardManager(
             tokenizer_A,
-            5,
+            config.actor_rollout_ref.rollout.n,
             tokenizer_B=tokenizer_B,
             rollout_n=config.actor_rollout_ref.rollout.n,
             **config.reward_model.get("reward_kwargs", {}),

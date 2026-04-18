@@ -225,6 +225,58 @@ _PENALTY_REGISTRY: dict[str, Callable[..., list[float]]] = {
     "combined": penalty_combined,
 }
 
+# Pairwise similarity function for each method (used by compute_memory_similarity).
+# "entropy" has no pairwise notion → fall back to char Jaccard.
+# "combined" → average of char Jaccard + 4-gram Jaccard.
+def _pairwise_sim_combined(a: str, b: str) -> float:
+    return (_char_jaccard(a, b) + _ngram_jaccard(a, b)) / 2.0
+
+
+_PAIRWISE_SIM_REGISTRY: dict[str, Callable[[str, str], float]] = {
+    "jaccard": _char_jaccard,
+    "ngram": _ngram_jaccard,
+    "edit_distance": _edit_ratio,
+    "ast": _ast_multiset_jaccard,
+    "entropy": _char_jaccard,
+    "combined": _pairwise_sim_combined,
+}
+
+
+def compute_memory_similarity(
+    codes: list[str],
+    past_codes: list[str],
+    method: str = "jaccard",
+    **kwargs,
+) -> list[float]:
+    """
+    For each code in ``codes``, compute its mean similarity to all non-empty
+    codes in ``past_codes`` (the cross-round memory window).
+
+    Returns a list of floats in [0, 1] with the same length as ``codes``.
+    If ``past_codes`` is empty, returns ``[1.0] * len(codes)`` so that
+    multiplying by this value leaves the within-group penalty unchanged.
+
+    Args:
+        codes:      Current-round code strings.
+        past_codes: Flat list of historical code strings from the memory window.
+        method:     Same method key as used for the group penalty.
+        **kwargs:   Forwarded to the pairwise similarity function (e.g. ``n`` for ngram).
+    """
+    valid_past = [p for p in past_codes if p]
+    if not valid_past:
+        return [1.0] * len(codes)
+
+    sim_fn = _PAIRWISE_SIM_REGISTRY.get(method, _char_jaccard)
+    result: list[float] = []
+    for ci in codes:
+        if not ci:
+            result.append(0.0)
+            continue
+        sims = [sim_fn(ci, p, **kwargs) if method == "ngram" else sim_fn(ci, p)
+                for p in valid_past]
+        result.append(sum(sims) / len(sims))
+    return result
+
 
 def compute_group_diversity_penalty(
     codes: list[str],

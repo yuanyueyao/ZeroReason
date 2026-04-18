@@ -61,7 +61,8 @@ from verl.utils.tracking import ValidationGenerationsLogger
 from verl.utils.model import compute_position_id_with_mask
 
 from recipe.my_project.reward import extract_code_func_and_input_from_data, validate_python_code_task
-from recipe.my_project.diversity import compute_group_diversity_penalty
+from collections import deque
+from recipe.my_project.diversity import compute_group_diversity_penalty, compute_memory_similarity
 WorkerType = Type[Worker]
 from recipe.my_project.prompt import prompt_A_Base
 
@@ -361,6 +362,10 @@ class MyTrainer:
         self.ray_worker_group_cls = ray_worker_group_cls
         self.device_name = device_name
         self.validation_generations_logger = ValidationGenerationsLogger()
+
+        # 跨轮次多样性惩罚记忆窗口：每个元素是一轮的 func_code_list（list[str]）
+        _mem_win: int = int(config.algorithm.get("diversity_memory_window", 10))
+        self._diversity_code_memory: deque[list[str]] = deque(maxlen=_mem_win)
 
         # if ref_in_actor is True, the reference policy will be actor without lora applied
         self.ref_in_actor = config.actor_rollout_ref.model.get("lora_rank", 0) > 0
@@ -1520,27 +1525,31 @@ Briefly plan internally, then output **only** the two fenced blocks (no other te
 
                 with marked_timer("time/prepare_data_B", timing_raw, color="green"):
                     # 勿在循环内对同一字符串反复 .format：第一次会把 {{...}} 变成 {...}，第二次会把示例里的 { 当成占位符触发 KeyError
-                    prompt_B_template = """# Task: Deduce the output of a Python snippet given the code and input
+                    prompt_B_template = """# Task: Deduce the output of a Python snippet with one matching input
 
-Reason step by step, then state the value returned by calling `f` with the given arguments.
+Given the code and input below, reason step by step, then state the value returned by calling `f` with the given arguments.
 
-Rules for formatting the answer inside the block:
-- If the result is a string, include the quotes as in Python.
-- If multiple values are returned, show them as a tuple (or as Python would print them).
+## Formatting rules
+- If the result is a string, include the quotes (e.g. `'hello'`).
+- If multiple values are returned, show them as Python would print a tuple (e.g. `(1, 'a')`).
+- Do **not** add any explanation inside the output block — only the final value.
 
-# Code snippet
+---
+
+## Python snippet
 ```python
 {SNIPPET}
 ```
 
-# Input (arguments to `f`)
+## Input
 ```input
 {INPUT}
 ```
 
-# Output (format only; your answer replaces the placeholder below)
+---
+Now, please reason step by step and generate the output of the code snippet with the given input.
 ```output
-{{YOUR_OUTPUT_HERE}}
+{{YOUR_ANSWER_HERE}}
 ```
 """
                 tensors_B = defaultdict(list)
@@ -1628,6 +1637,7 @@ Rules for formatting the answer inside the block:
                 #   algorithm.diversity_penalty_coeff: 0.0        # 0 = 关闭
                 #   algorithm.diversity_penalty_method: "jaccard"  # 见 diversity.py
                 #   algorithm.diversity_penalty_kwargs: {}         # 透传给具体方法
+                #   algorithm.diversity_memory_window: 10          # 跨轮次记忆窗口大小
                 with marked_timer("time/diversity_penalty", timing_raw, color="cyan"):
                     _div_coeff = float(self.config.algorithm.get("diversity_penalty_coeff", 0.0))
                     if _div_coeff > 0.0:
@@ -1645,6 +1655,16 @@ Rules for formatting the answer inside the block:
                             .long()
                         )  # [bs_a]
 
+                        # 展平记忆窗口中所有历史代码
+                        _past_codes: list[str] = [
+                            c for round_codes in self._diversity_code_memory for c in round_codes
+                        ]
+                        # 跨轮次相似度：每条当前样本与历史所有样本的平均相似度
+                        # 窗口为空时返回 1.0（乘法中性元素，退化为纯组内惩罚）
+                        _mem_sim_all = compute_memory_similarity(
+                            func_code_list, _past_codes, method=_div_method, **_div_kwargs
+                        )
+
                         # 逐 GRPO 组计算多样性惩罚，同时打印前 _div_num_examine 组的详情
                         _all_penalties: list[float] = []
                         for _g_idx, _g_start in enumerate(range(0, bs_a, _rollout_n)):
@@ -1653,7 +1673,10 @@ Rules for formatting the answer inside the block:
                             _group_pen = compute_group_diversity_penalty(
                                 _group_codes, method=_div_method, **_div_kwargs
                             )
-                            _all_penalties.extend(_group_pen)
+                            # 乘以跨轮次相似度：组内相似 AND 历史相似时惩罚最重
+                            _mem_sim_slice = _mem_sim_all[_g_start:_g_end]
+                            _combined_pen = [gp * ms for gp, ms in zip(_group_pen, _mem_sim_slice)]
+                            _all_penalties.extend(_combined_pen)
 
                             # ── 打印（与 CompetitionRewardManager 风格一致） ──
                             if _div_num_examine > 0 and _g_idx < _div_num_examine:
@@ -1664,17 +1687,20 @@ Rules for formatting the answer inside the block:
                                 ]
                                 print("================================================")
                                 print(f"[diversity_penalty] group={_g_idx}  "
-                                      f"method={_div_method}  coeff={_div_coeff}")
-                                for _k, (_code, _pen_val, _base_r) in enumerate(
-                                    zip(_group_codes, _group_pen, _base_reward_slice)
+                                      f"method={_div_method}  coeff={_div_coeff}  "
+                                      f"memory_window={len(self._diversity_code_memory)}")
+                                for _k, (_code, _gp, _ms, _cp, _base_r) in enumerate(
+                                    zip(_group_codes, _group_pen, _mem_sim_slice,
+                                        _combined_pen, _base_reward_slice)
                                 ):
                                     _preview = (_code[:120] + "...") if len(_code) > 120 else _code
                                     _preview = _preview.replace("\n", "\\n")
-                                    print(f"  sample[{_k}]  penalty={_pen_val:.4f}  "
+                                    print(f"  sample[{_k}]  group_pen={_gp:.4f}  "
+                                          f"mem_sim={_ms:.4f}  combined_pen={_cp:.4f}  "
                                           f"base_reward={_base_r:.4f}  "
-                                          f"final_reward={_base_r - _div_coeff * _pen_val:.4f}  "
+                                          f"final_reward={_base_r - _div_coeff * _cp:.4f}  "
                                           f"code_preview={_preview!r}")
-                                _g_pen_arr = _group_pen
+                                _g_pen_arr = _combined_pen
                                 print(f"  group_stats: mean={np.mean(_g_pen_arr):.4f}  "
                                       f"max={np.max(_g_pen_arr):.4f}  "
                                       f"min={np.min(_g_pen_arr):.4f}")
@@ -1690,6 +1716,11 @@ Rules for formatting the answer inside the block:
                         metrics["A/diversity_penalty/min"] = float(np.min(_all_penalties))
                         metrics["A/diversity_penalty/coeff"] = _div_coeff
                         metrics["A/diversity_penalty/method"] = _div_method
+                        metrics["A/diversity_penalty/memory_window"] = len(self._diversity_code_memory)
+                        metrics["A/diversity_penalty/mem_sim_mean"] = float(np.mean(_mem_sim_all))
+
+                    # 无论 coeff 是否 >0，都把当轮代码压入记忆窗口，供后续轮次使用
+                    self._diversity_code_memory.append(list(func_code_list))
                 # ── 多样性惩罚结束 ────────────────────────────────────────
 
                 with marked_timer("time/old_log_prob", timing_raw, color="purple"):
