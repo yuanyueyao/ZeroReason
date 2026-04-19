@@ -1,0 +1,9 @@
+{
+  "dataset_name": "openai/gsm8k",
+  "config": "main",
+  "instruction_suffix": "Let's think step by step and put the final answer after '####' (digits only, e.g. #### 42).",
+  "num_train": 7473,
+  "num_test": 1319,
+  "train_parquet": "/root/autodl-tmp/verl/recipe/train_gsm8k/data/train.parquet",
+  "test_parquet": "/root/autodl-tmp/verl/recipe/train_gsm8k/data/test.parquet"
+}

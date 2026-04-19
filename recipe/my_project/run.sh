@@ -3,6 +3,7 @@
 
 set -x
 export CUDA_VISIBLE_DEVICES=0,1
+export WANDB_MODE=offline
 # vLLM/FlashInfer JIT links with -lcudart; conda nvcc may not place libcudart on the link path.
 if [ -d /usr/local/cuda/lib64 ]; then
   export CUDA_HOME="${CUDA_HOME:-/usr/local/cuda}"
@@ -13,7 +14,7 @@ fi
  # data.val_files="[/root/autodl-tmp/verl/data/gsm8k/test.parquet,/root/autodl-tmp/verl/data/mbpp/test.parquet]" \
 python3 -m recipe.my_project.main_ppo \
     algorithm.adv_estimator=grpo \
-    algorithm.diversity_penalty_coeff=0.4 \
+    algorithm.diversity_penalty_coeff=0.6 \
     algorithm.diversity_penalty_method=jaccard \
     algorithm.diversity_penalty_kwargs={} \
     algorithm.diversity_memory_window=5 \
@@ -41,7 +42,7 @@ python3 -m recipe.my_project.main_ppo \
     actor_rollout_ref.rollout.name=vllm \
     actor_rollout_ref.rollout.gpu_memory_utilization=0.4 \
     actor_rollout_ref.rollout.max_num_batched_tokens=4096 \
-    actor_rollout_ref.rollout.n=32 \
+    actor_rollout_ref.rollout.n=8 \
     actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu=32 \
     actor_rollout_ref.ref.fsdp_config.param_offload=True \
     algorithm.use_kl_in_reward=False \

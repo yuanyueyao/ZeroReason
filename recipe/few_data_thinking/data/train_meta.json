@@ -1,0 +1,27 @@
+{
+  "num_cycles": 200,
+  "num_rows": 1000,
+  "order": "For each cycle: Q1, Q2, Q3, Q4, Q5 (fixed).",
+  "problems": [
+    {
+      "q": "Tom has 24 apples. He gives one third of them to Jane. Jane then gives him 5 apples back. How many apples does Tom have now?",
+      "ground_truth": "21"
+    },
+    {
+      "q": "A train travels 120 kilometers in 2 hours at constant speed. How many kilometers does it travel in 5 hours at the same speed?",
+      "ground_truth": "300"
+    },
+    {
+      "q": "Three different books are placed in a row on a shelf. How many different orderings are possible?",
+      "ground_truth": "6"
+    },
+    {
+      "q": "A jacket costs 80 dollars. It is on sale at 25% off. What is the sale price in dollars?",
+      "ground_truth": "60"
+    },
+    {
+      "q": "The sum of two consecutive even integers is 46. What is the smaller integer?",
+      "ground_truth": "22"
+    }
+  ]
+}

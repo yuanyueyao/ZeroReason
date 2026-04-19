@@ -52,17 +52,19 @@ class Tracking:
         if "tracking" in default_backend or "wandb" in default_backend:
             import wandb
 
-            settings = None
-            if config and config.get("trainer", {}).get("wandb_proxy", None):
-                settings = wandb.Settings(https_proxy=config["trainer"]["wandb_proxy"])
+            _init_timeout = int(os.environ.get("WANDB_INIT_TIMEOUT", 300))
+            _proxy = config.get("trainer", {}).get("wandb_proxy", None) if config else None
+            if _proxy:
+                settings = wandb.Settings(https_proxy=_proxy, init_timeout=_init_timeout)
+            else:
+                settings = wandb.Settings(init_timeout=_init_timeout)
 
             init_kwargs = {
                 "project": project_name,
                 "name": experiment_name,
                 "config": config,
+                "settings": settings,
             }
-            if settings is not None:
-                init_kwargs["settings"] = settings
 
             trainer_cfg = config.get("trainer", {}) if config else {}
             run_id = trainer_cfg.get("wandb_run_id") or os.environ.get("WANDB_RUN_ID")
