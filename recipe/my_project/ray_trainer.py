@@ -64,7 +64,9 @@ from recipe.my_project.reward import extract_code_func_and_input_from_data, vali
 from collections import deque
 from recipe.my_project.diversity import compute_group_diversity_penalty, compute_memory_similarity
 WorkerType = Type[Worker]
-from recipe.my_project.prompt import prompt_A_Base
+from recipe.my_project.prompt import build_user_prompt_A_with_history, prompt_A_Base
+from recipe.my_project.question_history import QuestionHistoryWindow
+from recipe.my_project.seed_question_history import builtin_seed_pairs
 
 class Role(Enum):
     """
@@ -366,6 +368,20 @@ class MyTrainer:
         # 跨轮次多样性惩罚记忆窗口：每个元素是一轮的 func_code_list（list[str]）
         _mem_win: int = int(config.algorithm.get("diversity_memory_window", 10))
         self._diversity_code_memory: deque[list[str]] = deque(maxlen=_mem_win)
+
+        _qh_cfg = OmegaConf.to_container(config.trainer.get("a_question_history", {}), resolve=True)
+        if not isinstance(_qh_cfg, dict):
+            _qh_cfg = {}
+        self._question_history = QuestionHistoryWindow(
+            enable=bool(_qh_cfg.get("enable", True)),
+            max_entries=int(_qh_cfg.get("max_entries", 32)),
+            max_chars_per_code=int(_qh_cfg.get("max_chars_per_code", 6000)),
+            max_chars_per_input=int(_qh_cfg.get("max_chars_per_input", 800)),
+        )
+        if bool(_qh_cfg.get("seed_builtin", True)) and self._question_history.enable:
+            _seed_n = self._question_history.add_many(builtin_seed_pairs())
+            if _seed_n:
+                print(f"A question history: seeded {_seed_n} builtin puzzle(s) at trainer init")
 
         # if ref_in_actor is True, the reference policy will be actor without lora applied
         self.ref_in_actor = config.actor_rollout_ref.model.get("lora_rank", 0) > 0
@@ -1133,6 +1149,9 @@ class MyTrainer:
         dataloader_state_dict = self.train_dataloader.state_dict()
         torch.save(dataloader_state_dict, dataloader_local_path)
 
+        qh_path = os.path.join(local_global_step_folder, "a_question_history.pt")
+        torch.save(self._question_history.state_dict(), qh_path)
+
         local_latest_checkpointed_iteration = os.path.join(self.config.trainer.default_local_dir, "latest_checkpointed_iteration.txt")
         os.makedirs(self.config.trainer.default_local_dir, exist_ok=True)
         with open(local_latest_checkpointed_iteration, "w") as f:
@@ -1181,6 +1200,13 @@ class MyTrainer:
             self.train_dataloader.load_state_dict(dataloader_state_dict)
         else:
             print(f"Warning: No dataloader state at {dataloader_local_path}, dataloader starts from scratch")
+
+        qh_path = os.path.join(global_step_folder, "a_question_history.pt")
+        if os.path.exists(qh_path):
+            self._question_history.load_state_dict(torch.load(qh_path, weights_only=False))
+            print(f"Competition: loaded A question history ({len(self._question_history)} entries) from {qh_path}")
+        else:
+            print(f"Competition: no A question history at {qh_path}, starting with an empty window")
 
     def _balance_batch(self, batch: DataProto, metrics, logging_prefix="global_seqlen"):
         """Reorder the data on single controller such that each dp rank gets similar total tokens"""
@@ -1390,85 +1416,48 @@ class MyTrainer:
             if self.config.trainer.get("val_only", False):
                 return
 
-        # Two fenced blocks: ```python (definitions + def f only) then ```input (args for f(...), not the answer).
-        prompt_A = """## Task: Create a New Python Code Snippet with One Matching Input
-
-You prepare a challenging task for another model (model B). Using standard Python only, design a **new and unique** code snippet where a test subject must use **deep algorithmic reasoning** to predict the **deterministic output** from the given input (like an I.Q. test).
-
-Your submission must include:
-1) A **first** code block: **only** imports (optional), optional classes/helpers, and **one** function named exactly **`f`**.
-2) A **second** block: **only** the arguments that will be passed to `f` — **not** the computed output.
-
-### Code block (```python) — STRICT CONTENT RULES
-- The **only** top-level callable entry point must be **`def f(...):`**. Do **not** use another name (wrong: `def find_maximum_sum`, `def solve`, etc.).
-- Allowed at top level, in order: `import ...` (stdlib only), optional `class` / helper `def` **only if required**, then **`def f(...):`** whose body ends with **`return ...`**.
-- **FORBIDDEN inside the first block** (very common mistakes — do not do these):
-  - Any **test harness**: assigning `result = f(...)`, calling `f(...)` at module level, `if __name__ == "__main__":`, etc.
-  - **`print(...)`**, **`input(...)`**, logging, or **comments like `# Input`** followed by fake test code.
-  - **Parsing strings** that duplicate the job of `f` outside `f` (e.g. `input_args = '1,2,3'` then `f([int(x) for ...])` at top level). Put logic **inside** `f` instead; the second block supplies **ready Python values** as arguments.
-  - Anything **after** the final line of `def f` (no trailing top-level statements).
-- Nested `def` / classes **inside** `f` are allowed.
-- `f` must **return** a value, take **at least one** parameter, be **deterministic**.
-- Require **multi-step reasoning** (e.g. trees, heaps, graphs, DP, recursion, backtracking, etc.).
-- **AVOID:** randomness, date/time, I/O, printing, external mutable state. ~10s CPU.
-
-### Second block (```input) — STRICT
-- Must contain **only** a comma-separated list of **Python expressions** that are the **arguments to `f`**, in order — what you would write inside `f(` `)`.
-- **WRONG:** the expected numeric/text **answer** (e.g. `13`), or a bare output label. **RIGHT:** values such as `[-1, 2, -3, 4]` or `'John', {'age': 20}`.
-
-### Formatting — exactly two fences, in order, nothing else
-1) ```python — **only** the rules above (imports + optional types + `def f...`).
-2) ```input — **only** the argument list for one call `f(...)`.
-
-### Good example
-```python
-def f(name: str, info: dict) -> str:
-    # logic only inside f
-    return str(len(name)) + str(info.get("age", 0))
-```
-```input
-'John', {'age': 20, 'city': 'New York'}
-```
-
-### Bad example (do NOT output anything like this)
-- First block ends with `print(result)` or `result = find_maximum_sum(...)` — **invalid**.
-- Second block is `13` — that is an **answer**, not **inputs** — **invalid**.
-
-### Quality
-- Executable as: load first block, then `f(<args from second block>)`.
-- Prefer non-trivial algorithmic depth; avoid trivial one-liners.
-
-Briefly plan internally, then output **only** the two fenced blocks (no other text)."""
-        
-        raw_prompt_A = self.tokenizer_A.apply_chat_template([{"role": "system", "content": "You are a helpful assistant. Please think step by step and generate a new and unique code snippet with one matching input."}, {"role": "user", "content": prompt_A_Base}], add_generation_prompt=True, tokenize=False)
-        model_inputs_A = self.tokenizer_A(raw_prompt_A, return_tensors="pt", add_special_tokens=False)
-        input_ids_A = model_inputs_A.pop("input_ids")
-        attention_mask_A = model_inputs_A.pop("attention_mask")
-        input_ids_A, attention_mask_A = postprocess_data(
-            input_ids=input_ids_A,
-            attention_mask=attention_mask_A,
-            max_length=self.config.data.get("max_prompt_length", 2048),
-            pad_token_id=self.tokenizer_A.pad_token_id,
-            left_pad=True,
-            truncation="left",
-        )
-        position_ids_A = compute_position_id_with_mask(attention_mask_A)
-        gen_batch_A = DataProto.from_single_dict({
-            "input_ids": input_ids_A,
-            "attention_mask": attention_mask_A,
-            "position_ids": position_ids_A,
-        })
-        gen_batch_A.meta_info = {
-            "eos_token_id": self.tokenizer_A.eos_token_id,
-            "pad_token_id": self.tokenizer_A.pad_token_id,
-            "recompute_log_prob": False,
-        }
+        # A：```python``` + ```input```；用户段每步按历史窗口重建，避免重复已出现过的题目。
         dp_size = self.actor_rollout_wg_A.world_size
-        gen_batch_padded_A, pad_size_A = pad_dataproto_to_divisor(gen_batch_A, dp_size)
         while self.global_steps < self.total_training_steps:
             print(f"\n========== Training step {self.global_steps + 1} of {self.total_training_steps} ==========\n")
             timing_raw = {}
             with marked_timer("time/step", timing_raw, color="red"):
+                with marked_timer("time/build_prompt_A", timing_raw, color="yellow"):
+                    history_block = self._question_history.format_for_prompt()
+                    user_content_A = build_user_prompt_A_with_history(prompt_A_Base, history_block)
+                    sys_a = "You are a helpful assistant. Please think step by step and generate a new and unique code snippet with one matching input."
+                    if history_block:
+                        sys_a += " You must produce a puzzle that is clearly different from every puzzle listed in the user message history section."
+                    raw_prompt_A = self.tokenizer_A.apply_chat_template(
+                        [{"role": "system", "content": sys_a}, {"role": "user", "content": user_content_A}],
+                        add_generation_prompt=True,
+                        tokenize=False,
+                    )
+                    model_inputs_A = self.tokenizer_A(raw_prompt_A, return_tensors="pt", add_special_tokens=False)
+                    input_ids_A = model_inputs_A.pop("input_ids")
+                    attention_mask_A = model_inputs_A.pop("attention_mask")
+                    input_ids_A, attention_mask_A = postprocess_data(
+                        input_ids=input_ids_A,
+                        attention_mask=attention_mask_A,
+                        max_length=self.config.data.get("max_prompt_length", 2048),
+                        pad_token_id=self.tokenizer_A.pad_token_id,
+                        left_pad=True,
+                        truncation="left",
+                    )
+                    position_ids_A = compute_position_id_with_mask(attention_mask_A)
+                    gen_batch_A = DataProto.from_single_dict({
+                        "input_ids": input_ids_A,
+                        "attention_mask": attention_mask_A,
+                        "position_ids": position_ids_A,
+                    })
+                    gen_batch_A.meta_info = {
+                        "eos_token_id": self.tokenizer_A.eos_token_id,
+                        "pad_token_id": self.tokenizer_A.pad_token_id,
+                        "recompute_log_prob": False,
+                    }
+                    gen_batch_padded_A, pad_size_A = pad_dataproto_to_divisor(gen_batch_A, dp_size)
+                    metrics["A/question_history/window_len_before_gen"] = float(len(self._question_history))
+
                 with marked_timer("time/generate_sequences_A", timing_raw, color="blue"):
                     gen_batch_output_A = self.actor_rollout_wg_A.generate_sequences(gen_batch_padded_A)
                 
@@ -1522,6 +1511,10 @@ Briefly plan internally, then output **only** the two fenced blocks (no other te
                         metrics["A/python_block_token_len/mean_if_parse_ok"] = 0.0
                         metrics["A/python_block_token_len/max_if_parse_ok"] = 0.0
                     has_b = len(validated_tuples) > 0
+                    if self._question_history.enable and validated_tuples:
+                        _qh_added = self._question_history.add_many([(f, i) for f, i, _c, _ai in validated_tuples])
+                        metrics["A/question_history/added_this_step"] = float(_qh_added)
+                    metrics["A/question_history/window_len_after_step"] = float(len(self._question_history))
 
                 with marked_timer("time/prepare_data_B", timing_raw, color="green"):
                     # 勿在循环内对同一字符串反复 .format：第一次会把 {{...}} 变成 {...}，第二次会把示例里的 { 当成占位符触发 KeyError

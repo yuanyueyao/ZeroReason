@@ -108,3 +108,23 @@ def f(name: str, info: dict) -> str:
 ```
 
 Now generate a new, non-trivial puzzle using recursion, DP, graphs, or similar."""
+
+
+def build_user_prompt_A_with_history(base_user: str, history_block: str) -> str:
+    """Prepend a historical puzzle window so model A avoids repeating past tasks."""
+    hb = (history_block or "").strip()
+    if not hb:
+        return base_user
+    return (
+        "## Past problems (historical window)\n\n"
+        "Below are **previous** puzzles already produced in this run. Your new submission must be "
+        "**substantively different** from every item here: different core idea, structure, and data — "
+        "not a minor rename, reorder, or surface tweak.\n\n"
+        "**Formatting note:** The fenced code/input blocks in this section are **for reference only**; "
+        "do **not** repeat or echo them as your answer. After the `---` separator, the task and example "
+        "define what you must output: your final reply must still be **exactly two** fenced blocks in order "
+        "(first `python`, then `input`, per the instructions below), and nothing else.\n\n"
+        f"{hb}\n\n"
+        "---\n\n"
+        f"{base_user}"
+    )

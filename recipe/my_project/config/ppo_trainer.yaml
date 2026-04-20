@@ -1018,6 +1018,15 @@ trainer:
   # Validation frequency (in training iterations)
   test_freq: -1
 
+  # Model A: sliding window of past validated (code, input) pairs — injected into A's user prompt so new puzzles differ from history
+  a_question_history:
+    enable: true
+    # 训练开始时用 seed_question_history.builtin_seed_pairs() 预填历史窗口（与 checkpoint 恢复互斥：有 a_question_history.pt 时会覆盖）
+    seed_builtin: true
+    max_entries: 32
+    max_chars_per_code: 6000
+    max_chars_per_input: 800
+
   # Model B GSM8K eval during fit_competition: 0 = off, -1 = same as test_freq
   gsm8k_b_eval_freq: -1
 

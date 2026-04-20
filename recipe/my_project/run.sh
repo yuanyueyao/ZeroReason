@@ -3,7 +3,7 @@
 
 set -x
 export CUDA_VISIBLE_DEVICES=0,1
-export WANDB_MODE=offline
+
 # vLLM/FlashInfer JIT links with -lcudart; conda nvcc may not place libcudart on the link path.
 if [ -d /usr/local/cuda/lib64 ]; then
   export CUDA_HOME="${CUDA_HOME:-/usr/local/cuda}"
