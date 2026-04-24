@@ -10,14 +10,7 @@ from typing import Optional
 
 # \boxed{...} — inner may contain LaTeX; we take a best-effort slice
 _BOXED_RE = re.compile(r"\\boxed\s*\{([^}]*)\}", re.DOTALL)
-# Final answer style lines
-_ANSWER_LINE_RE = re.compile(
-    r"(?:^|\n)\s*(?:final\s*answer|answer)\s*[:：]\s*([^\n]+)",
-    re.IGNORECASE | re.MULTILINE,
-)
-# Integer or float (optional sign / scientific)
-_FLOAT_RE = re.compile(r"[+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?")
-# Simple fraction written as a/b (digits only)
+# Simple fraction written as a/b (digits only) — used by normalize_answer_key
 _FRAC_RE = re.compile(r"[+-]?\d+\s*/\s*[+-]?\d+")
 
 
@@ -65,9 +58,8 @@ def normalize_answer_key(raw: Optional[str]) -> Optional[str]:
 
 class AnswerExtractor:
     """
-    Heuristic extraction of a single scalar answer from arbitrary completion text.
-
-    Order: ``\\boxed{...}`` → ``Answer:`` line → last simple fraction → last float-like token.
+    Extracts the scalar answer from the last ``\\boxed{...}`` in the text.
+    Returns ``None`` if no ``\\boxed`` is found.
     """
 
     def __init__(self) -> None:
@@ -77,38 +69,14 @@ class AnswerExtractor:
         if not text or not text.strip():
             return None
 
-        # 1) \\boxed{...}
         boxed = _BOXED_RE.findall(text)
-        if boxed:
-            inner = boxed[-1].strip()
-            # inner might be "42" or "1/2" or messy TeX — try normalize on raw inner first
-            nk = normalize_answer_key(inner)
-            if nk is not None:
-                return nk
-            # strip nested braces one level
-            nk2 = normalize_answer_key(inner.replace("{", "").replace("}", ""))
-            if nk2 is not None:
-                return nk2
+        if not boxed:
+            return None
 
-        # 2) "Answer:" line
-        al = _ANSWER_LINE_RE.findall(text)
-        if al:
-            nk = normalize_answer_key(al[-1].strip())
-            if nk is not None:
-                return nk
-
-        # 3) Last a/b fraction
-        fracs = _FRAC_RE.findall(text)
-        if fracs:
-            nk = normalize_answer_key(fracs[-1])
-            if nk is not None:
-                return nk
-
-        # 4) Last float-like number in the string (common for CoT)
-        nums = _FLOAT_RE.findall(text)
-        if nums:
-            nk = normalize_answer_key(nums[-1])
-            if nk is not None:
-                return nk
-
-        return None
+        inner = boxed[-1].strip()
+        nk = normalize_answer_key(inner)
+        if nk is not None:
+            return nk
+        # strip nested braces one level
+        nk2 = normalize_answer_key(inner.replace("{", "").replace("}", ""))
+        return nk2

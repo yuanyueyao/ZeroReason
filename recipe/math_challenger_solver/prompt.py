@@ -17,7 +17,7 @@ SYSTEM_A_NO_HISTORY = (
 
 SYSTEM_B = (
     "You are a helpful assistant. Solve the given mathematics problem. Show reasoning if needed; "
-    "a correct final numeric or algebraic result should appear clearly in your answer."
+    "then put your final answer inside \\boxed{} at the end, e.g. \\boxed{42}."
 )
 
 
@@ -63,4 +63,4 @@ def build_user_prompt_solver(problem_text: str) -> str:
 
 {problem_text}
 
-Think step by step, then solve the problem. """
+Think step by step, then solve the problem. Put your final answer inside \\boxed{{}}. """
