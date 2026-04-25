@@ -22,6 +22,36 @@ import re
 import datasets
 
 
+def _load_gsm8k_from_huggingface(hf_endpoint=None):
+    if hf_endpoint:
+        os.environ["HF_ENDPOINT"] = hf_endpoint.rstrip("/")
+    return datasets.load_dataset("openai/gsm8k", "main")
+
+
+def _load_gsm8k_from_modelscope(cache_dir=None):
+    try:
+        from modelscope.msdatasets import MsDataset
+        from modelscope.utils.constant import Hubs
+    except ImportError as e:
+        raise ImportError(
+            "使用 --source modelscope 需安装: pip install modelscope addict"
+        ) from e
+    # 与 openai/gsm8k 的 config 名一致；数据从 ModelScope Hub 拉取，不经 Hugging Face 端点
+    raw = MsDataset.load(
+        "AI-ModelScope/gsm8k",
+        subset_name="main",
+        hub=Hubs.modelscope,
+        cache_dir=cache_dir,
+    )
+    if isinstance(raw, datasets.DatasetDict):
+        return raw
+    # 少数类型会包一层 MsDataset
+    inner = getattr(raw, "ds_instance", None)
+    if inner is not None and isinstance(inner, datasets.DatasetDict):
+        return inner
+    raise TypeError(f"未预期的 ModelScope 返回类型: {type(raw)}")
+
+
 def extract_solution(solution_str):
     solution = re.search("#### (\\-?[0-9\\.\\,]+)", solution_str)
     assert solution is not None
@@ -35,17 +65,37 @@ if __name__ == "__main__":
     parser.add_argument(
         "--local_dir",
         "--local_save_dir",
-        default="/data/yy/verl/data/gsm8k",
+        default="/data0/yyy/verl/data/gsm8k",
         dest="local_dir",
         help="Output directory for train.parquet and test.parquet (same as --local_save_dir).",
     )
     parser.add_argument("--hdfs_dir", default=None)
+    parser.add_argument(
+        "--source",
+        choices=("huggingface", "modelscope"),
+        default="huggingface",
+        help="huggingface: 从 Hub 下载；modelscope: 从 ModelScope（国内源）下载同名数据。",
+    )
+    parser.add_argument(
+        "--hf_endpoint",
+        default=None,
+        help="仅 --source huggingface：覆盖 HF 端点（镜像连不上时可设为 https://huggingface.co）。",
+    )
+    parser.add_argument(
+        "--ms_cache_dir",
+        default=None,
+        help="仅 --source modelscope：ModelScope 数据集缓存目录（默认走 ModelScope 全局配置）。",
+    )
 
     args = parser.parse_args()
 
+    # 与下游 verl 配置一致：内容同 openai/gsm8k，仅下载渠道不同
     data_source = "openai/gsm8k"
 
-    dataset = datasets.load_dataset(data_source, "main")
+    if args.source == "modelscope":
+        dataset = _load_gsm8k_from_modelscope(cache_dir=args.ms_cache_dir)
+    else:
+        dataset = _load_gsm8k_from_huggingface(hf_endpoint=args.hf_endpoint)
 
     train_dataset = dataset["train"]
     test_dataset = dataset["test"]
