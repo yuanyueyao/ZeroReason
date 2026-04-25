@@ -8,8 +8,30 @@ from fractions import Fraction
 from typing import Optional
 
 
-# \boxed{...} — inner may contain LaTeX; we take a best-effort slice
-_BOXED_RE = re.compile(r"\\boxed\s*\{([^}]*)\}", re.DOTALL)
+def _extract_last_boxed_inner(text: str) -> Optional[str]:
+    """
+    Inner text of the last ``\\boxed{...}``, with brace depth so nested ``{ }``
+    (e.g. ``\\sqrt{3}``, ``\\frac{a}{b}``) does not terminate the match early.
+    """
+    idx = text.rfind("\\boxed")
+    if idx < 0:
+        return None
+    j = idx + len("\\boxed")
+    while j < len(text) and text[j].isspace():
+        j += 1
+    if j >= len(text) or text[j] != "{":
+        return None
+    depth = 0
+    for k in range(j, len(text)):
+        if text[k] == "{":
+            depth += 1
+        elif text[k] == "}":
+            depth -= 1
+            if depth == 0:
+                return text[j + 1 : k].strip()
+    return None
+
+
 # Simple fraction written as a/b (digits only) — used by normalize_answer_key
 _FRAC_RE = re.compile(r"[+-]?\d+\s*/\s*[+-]?\d+")
 
@@ -69,11 +91,9 @@ class AnswerExtractor:
         if not text or not text.strip():
             return None
 
-        boxed = _BOXED_RE.findall(text)
-        if not boxed:
+        inner = _extract_last_boxed_inner(text)
+        if not inner:
             return None
-
-        inner = boxed[-1].strip()
         nk = normalize_answer_key(inner)
         if nk is not None:
             return nk
