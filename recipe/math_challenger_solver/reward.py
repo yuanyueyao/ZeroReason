@@ -108,7 +108,7 @@ class MathMajorityRewardManager:
 
                 if self.num_examine > 0 and j < self.num_examine:
                     print("================================================")
-                    print("[B response]", resp_str[:2000])
+                    print("[B response]", resp_str)
                     print("[B extracted]", pred, "[majority_label]", label if valid else "N/A")
                     print("[B majority_valid]", valid, "[B reward]", r_b)
                     print("================================================")
@@ -179,7 +179,7 @@ class MathMajorityRewardManager:
 
             if self.num_examine > 0 and i < self.num_examine:
                 print("================================================")
-                print("[A response]", response_str_A[:2000])
+                print("[A response]", response_str_A)
                 print("[A reward]", ra)
                 print("================================================")
 

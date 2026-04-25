@@ -42,13 +42,6 @@ from recipe.my_project.ray_trainer import (
 )
 
 
-def _clip(s: str, max_chars: int) -> str:
-    s = s.replace("\r\n", "\n").strip()
-    if len(s) <= max_chars:
-        return s
-    return s[: max_chars - 3] + "..."
-
-
 class MathChallengerTrainer(MyTrainer):
     """
     Same resource layout as ``MyTrainer`` (pools A/B), but:
@@ -125,13 +118,13 @@ class MathChallengerTrainer(MyTrainer):
             for i in range(min(n_a_log, bs_a)):
                 print(f"\n--- [出题者 A] 样本 i={i} | parse_ok={parse_ok_list[i]} ---")
                 if parse_ok_list[i] and problem_texts[i].strip():
-                    print(_clip(problem_texts[i], 4000))
+                    print(problem_texts[i])
                 else:
                     plen = gen_batch_output_A[i].batch["prompts"].shape[-1]
                     resp_ids = gen_batch_output_A[i].batch["responses"]
                     vlen = int(gen_batch_output_A[i].batch["attention_mask"][plen:].sum())
                     raw = self.tokenizer_A.decode(resp_ids[:vlen], skip_special_tokens=False)
-                    print(_clip(raw, 2000))
+                    print(raw)
 
         if n_groups_log > 0 and validated_tuples and gen_batch_output_B is not None:
             num_groups_b = len(validated_tuples)
@@ -141,7 +134,7 @@ class MathChallengerTrainer(MyTrainer):
                 lab = maj_labels[j0] if j0 < len(maj_labels) else ""
                 ok_mv = maj_valid[j0] if j0 < len(maj_valid) else False
                 print(f"\n--- [解题者 B] 题组 g={g} (A 样本索引 {a_idx}) ---")
-                print(f"[题目]\n{_clip(prob_g, 4000)}")
+                print(f"[题目]\n{prob_g}")
                 print(f"[多数投票伪标签] {'(无效/全失败)' if not ok_mv else lab}")
                 for k in range(rollout_n):
                     j = j0 + k
@@ -151,7 +144,7 @@ class MathChallengerTrainer(MyTrainer):
                     vl = int(item_b.batch["attention_mask"][plen:].sum())
                     resp_str = self.tokenizer_B.decode(resp_ids[:vl], skip_special_tokens=False)
                     pred = self._answer_extractor.extract(resp_str)
-                    print(f"  · 分支 k={k} | extract={pred!r} | 回复摘录:\n{_clip(resp_str, 800)}")
+                    print(f"  · 分支 k={k} | extract={pred!r} | 回复:\n{resp_str}")
         print(f"\n{'#' * 60}\n")
 
     def fit_competition(self):

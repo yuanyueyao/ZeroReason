@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Example: math challenger (A: ```problem``` only) + B majority-vote pseudo labels.
 # Requires 2× trainer.n_gpus_per_node × nnodes GPUs (pool_A + pool_B).
+# vLLM chunked prefill: rollout.max_num_batched_tokens >= max_prompt_length + max_response_length.
 set -eux
 export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0,1,2,3}"
 
@@ -59,7 +60,7 @@ python3 -m recipe.math_challenger_solver.main_ppo \
   math_challenger.history_window_size=10 \
   math_challenger.log_groups_per_step=2 \
   math_challenger.log_A_samples_per_step=4 \
-  math_challenger.use_problem_history=True \
+  math_challenger.use_problem_history=False \
   math_challenger.initial_history_gsm8k_parquet="${IH_PARQUET}" \
   math_challenger.initial_history_num_problems="${GSM8K_INITIAL_HISTORY_N:-10}" \
   "${HIST_SEED_ARGS[@]}" \
