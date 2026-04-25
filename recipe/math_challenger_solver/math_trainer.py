@@ -236,7 +236,7 @@ class MathChallengerTrainer(MyTrainer):
                     gen_batch_output_A = self.actor_rollout_wg_A.generate_sequences(gen_batch_padded_A)
                     gen_batch_output_A.batch["response_mask"] = compute_response_mask(gen_batch_output_A)
                     if pad_size_A:
-                        gen_batch_output_A = unpad_dataproto(gen_batch_output_A, pad_size_A)
+                        gen_batch_output_A = unpad_dataproto(gen_batch_output_A, pad_size_A * rollout_n)
                     texts_a = self.tokenizer_A.batch_decode(gen_batch_output_A.batch["responses"], skip_special_tokens=True)
                     metrics["A/response_preview"] = texts_a
 
@@ -334,7 +334,7 @@ class MathChallengerTrainer(MyTrainer):
                             gen_batch_output_B = self.actor_rollout_wg_B.generate_sequences(gen_batch_padded_B)
                             gen_batch_output_B.batch["response_mask"] = compute_response_mask(gen_batch_output_B)
                             if pad_size_B:
-                                gen_batch_output_B = unpad_dataproto(gen_batch_output_B, pad_size_B)
+                                gen_batch_output_B = unpad_dataproto(gen_batch_output_B, pad_size_B * rollout_n)
                             texts_b = self.tokenizer_B.batch_decode(gen_batch_output_B.batch["responses"], skip_special_tokens=True)
                             metrics["B/response_preview"] = texts_b
                             metrics["B/response_count"] = len(texts_b)
