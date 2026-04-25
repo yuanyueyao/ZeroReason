@@ -180,6 +180,7 @@ class MathChallengerTrainer(MyTrainer):
 
         rollout_n = int(self.config.actor_rollout_ref.rollout.n)
         dp_size_a = self.actor_rollout_wg_A.world_size
+        dp_size_b = self.actor_rollout_wg_B.world_size
 
         while self.global_steps < self.total_training_steps:
             if rollout_n == 1 and not self._warned_rollout_n_one:
@@ -328,7 +329,6 @@ class MathChallengerTrainer(MyTrainer):
                             "pad_token_id": self.tokenizer_B.pad_token_id,
                             "recompute_log_prob": False,
                         }
-                        dp_size_b = self.actor_rollout_wg_B.world_size
                         gen_batch_padded_B, pad_size_B = pad_dataproto_to_divisor(gen_batch_B, dp_size_b)
                         with marked_timer("time/generate_sequences_B", timing_raw, color="blue"):
                             gen_batch_output_B = self.actor_rollout_wg_B.generate_sequences(gen_batch_padded_B)
@@ -458,6 +458,7 @@ class MathChallengerTrainer(MyTrainer):
                 else:
                     self._diversity_problem_memory.append([problem_texts[i] if parse_ok_list[i] else "" for i in range(bs_a)])
 
+                batch_B = None
                 with marked_timer("time/old_log_prob", timing_raw, color="purple"):
                     old_log_prob_A = self.actor_rollout_wg_A.compute_log_prob(gen_batch_output_A)
                     batch_A = gen_batch_output_A.union(old_log_prob_A)

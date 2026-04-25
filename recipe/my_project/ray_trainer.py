@@ -369,9 +369,11 @@ class MyTrainer:
         _mem_win: int = int(config.algorithm.get("diversity_memory_window", 10))
         self._diversity_code_memory: deque[list[str]] = deque(maxlen=_mem_win)
 
-        _qh_cfg = OmegaConf.to_container(config.trainer.get("a_question_history", {}), resolve=True)
-        if not isinstance(_qh_cfg, dict):
-            _qh_cfg = {}
+        _qh_raw = config.trainer.get("a_question_history", {})
+        if OmegaConf.is_config(_qh_raw):
+            _qh_cfg = OmegaConf.to_container(_qh_raw, resolve=True)
+        else:
+            _qh_cfg = _qh_raw if isinstance(_qh_raw, dict) else {}
         self._question_history = QuestionHistoryWindow(
             enable=bool(_qh_cfg.get("enable", True)),
             max_entries=int(_qh_cfg.get("max_entries", 32)),
