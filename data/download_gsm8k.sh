@@ -1,0 +1,1 @@
+python /data0/yyy/verl/examples/data_preprocess/gsm8k.py --source modelscope
