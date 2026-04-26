@@ -971,7 +971,7 @@ trainer:
   project_name: verl_examples
 
   # Experiment name for run identification in tracking tools
-  experiment_name: gsm8k
+  experiment_name: math_challenger_judge
 
   # Logging backends to use: "console", "wandb", etc.
   logger: [ 'console', 'wandb' ]
@@ -990,6 +990,11 @@ trainer:
 
   # Number of GPUs per node
   n_gpus_per_node: 8
+
+  # Optional: GPUs per node for pool B / pool J (default: same as n_gpus_per_node)
+  n_gpus_per_node_b: null
+
+  n_gpus_per_node_j: null
 
   # Save frequency (by iteration) for model checkpoints
   save_freq: -1
@@ -1079,3 +1084,31 @@ math_challenger:
 
   # Console: max A rollouts to print per step (problem text or raw response if parse failed)
   log_A_samples_per_step: 4
+
+# Third actor (judge). main_ppo merges actor_rollout_ref if judge.actor_rollout_ref is null
+judge:
+  entropy_zero: False
+  # 覆盖合并后的 actor_rollout_ref.rollout.n：Judge 每题/每答采样条数，供 GRPO 组内比较；多数决分数见 score_parse.majority_vote_judge_score
+  judge_rollout_n: 4
+
+# Shaping for A/B from judge <score> (read by MathMajorityJudgeRewardManager)
+math_challenger_judge:
+  alpha: 0.1
+
+  beta: 0.1
+
+  score_min: 1.0
+
+  score_max: 10.0
+
+  judge_format_weight: 0.5
+
+  judge_range_weight: 0.5
+
+  # 单条 judge 行奖励：与多数票 winning 整数档一致时额外加 w_m（PPO/GRPO）
+  judge_majority_match_weight: 0.2
+
+  # 控制台：打印前 N 个题面 judge 组、前 M 行 B 的解答 judge；每条回复最多字符数
+  log_judge_problem_groups: 2
+  log_judge_answer_rows: 2
+  log_judge_chars_max: 480

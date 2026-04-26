@@ -87,6 +87,9 @@ class Role(Enum):
     RefPolicy_B = 11
     RewardModel_B = 12
     ActorRolloutRef_B = 13
+    # Third pool (e.g. trainable judge in math_challenger_solver_judge)
+    ActorRollout_J = 14
+    RefPolicy_J = 15
 
 
 @dataclass
