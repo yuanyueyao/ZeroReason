@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# 全脚本 pip 使用阿里云 PyPI 镜像；若需官方源可执行：PIP_INDEX_URL=  bash install.sh
+# 全脚本 pip 使用阿里云 PyPI 镜像；若需官方源可执行：PIP_INDEX_URL=  bash install.sh; 以及github国内镜像
 export PIP_INDEX_URL="${PIP_INDEX_URL:-https://mirrors.aliyun.com/pypi/simple/}"
 export PIP_TRUSTED_HOST="${PIP_TRUSTED_HOST:-mirrors.aliyun.com}"
 
@@ -30,7 +30,7 @@ pip install "nvidia-ml-py>=12.560.30" "fastapi[standard]>=0.115.0" "optree>=0.13
 
 echo "3. install FlashAttention and FlashInfer"
 # Install flash-attn-2.8.1 (cxx11abi=False)
-wget -nv https://github.com/Dao-AILab/flash-attention/releases/download/v2.8.1/flash_attn-2.8.1+cu12torch2.8cxx11abiFALSE-cp312-cp312-linux_x86_64.whl && \
+wget -nv "https://ghproxy.net/https://github.com/Dao-AILab/flash-attention/releases/download/v2.8.1/flash_attn-2.8.1+cu12torch2.8cxx11abiFALSE-cp312-cp312-linux_x86_64.whl" && \
     pip install --no-cache-dir flash_attn-2.8.1+cu12torch2.8cxx11abiFALSE-cp312-cp312-linux_x86_64.whl
 
 pip install --no-cache-dir flashinfer-python==0.3.1
@@ -56,4 +56,5 @@ if [ $USE_MEGATRON -eq 1 ]; then
     pip install nvidia-cudnn-cu12==9.10.2.21
 fi
 
+pip install "numpy<2.3.0"
 echo "Successfully installed all packages"
