@@ -35,7 +35,7 @@ python3 -m recipe.math_challenger_solver.main_ppo \
   data.filter_overlong_prompts=True \
   data.truncation='error' \
   actor_rollout_ref.model.path="${MODEL_PATH:-/data3/yyy/models/Qwen3-4B-Base}" \
-  actor_rollout_ref.actor.optim.lr=2e-7 \
+  actor_rollout_ref.actor.optim.lr=1e-6 \
   actor_rollout_ref.model.use_remove_padding=True \
   actor_rollout_ref.model.enable_gradient_checkpointing=True \
   actor_rollout_ref.actor.ppo_mini_batch_size=256 \
@@ -57,7 +57,7 @@ python3 -m recipe.math_challenger_solver.main_ppo \
   trainer.logger=['console','wandb'] \
   trainer.test_freq=20 \
   trainer.project_name=math_challenger_solver \
-  trainer.experiment_name=v1_5e-7 \
+  trainer.experiment_name=v1_1e-6 \
   reward_model.num_examine=2 \
   math_challenger.history_window_size=10 \
   math_challenger.log_groups_per_step=2 \
