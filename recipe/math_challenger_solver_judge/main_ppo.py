@@ -137,6 +137,7 @@ class TaskRunner:
             rollout_n=int(config.actor_rollout_ref.rollout.n),
             alpha=float(mcj.get("alpha", 0.1)),
             beta=float(mcj.get("beta", 0.1)),
+            beta_penalty=float(mcj.get("beta_penalty", 0.0)),
         )
 
         from verl.workers.reward_manager import NaiveRewardManager

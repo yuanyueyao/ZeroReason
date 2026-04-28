@@ -27,11 +27,16 @@ class MathMajorityJudgeRewardManager(MathMajorityRewardManager):
         *,
         alpha: float = 0.1,
         beta: float = 0.1,
+        beta_penalty: float = 0.0,
         **kwargs,
     ) -> None:
         super().__init__(tokenizer, num_examine, tokenizer_B, rollout_n, **kwargs)
         self.alpha = float(alpha)
         self.beta = float(beta)
+        # 惩罚系数：当 judge 给 B 打低分时从奖励中扣除 beta_penalty*(1-jv)
+        # 与 beta 组合形成对称信号：adj = beta*jv - beta_penalty*(1-jv)
+        # 设为 0 时完全向后兼容（只加分，不减分）
+        self.beta_penalty = float(beta_penalty)
 
     def __call__(self, data_A: DataProto, data_B: DataProto | None = None, *, return_dict: bool = False):
         out = super().__call__(data_A, data_B, return_dict=True)
@@ -54,15 +59,13 @@ class MathMajorityJudgeRewardManager(MathMajorityRewardManager):
                         bonus = self.alpha * jv
             reward_extra.setdefault("A_judge_bonus", []).append(bonus)
 
-        if data_B is not None and reward_tensor_B is not None and self.beta > 0.0:
+        _apply_judge_b = (self.beta > 0.0 or self.beta_penalty > 0.0) and data_B is not None and reward_tensor_B is not None
+        if _apply_judge_b:
             jB = data_B.non_tensor_batch.get("judge_score_answer_norm")
             len_b = len(data_B)
             if jB is not None and len(jB) == len_b:
                 for j in range(len_b):
                     jv = float(jB[j])
-                    if jv <= 0.0:
-                        reward_extra.setdefault("B_judge_bonus", []).append(0.0)
-                        continue
                     item = data_B[j]
                     plen = item.batch["prompts"].shape[-1]
                     vlen = int(item.batch["attention_mask"][plen:].sum())
@@ -71,8 +74,15 @@ class MathMajorityJudgeRewardManager(MathMajorityRewardManager):
                         continue
                     base = float(reward_tensor_B[j, vlen - 1].item())
                     if base >= 0.99:
-                        reward_tensor_B[j, vlen - 1] = base + self.beta * jv
-                        reward_extra.setdefault("B_judge_bonus", []).append(self.beta * jv)
+                        # adj = beta*jv - beta_penalty*(1-jv)
+                        # jv=1 → +beta（好推理加分）
+                        # jv=0.5 → beta*0.5 - beta_penalty*0.5（中性附近）
+                        # jv=0 → -beta_penalty（差推理减分，打破全员收敛到同一答案时的零方差）
+                        bonus = self.beta * jv
+                        penalty = self.beta_penalty * (1.0 - jv)
+                        adj = bonus - penalty
+                        reward_tensor_B[j, vlen - 1] = base + adj
+                        reward_extra.setdefault("B_judge_bonus", []).append(adj)
                     else:
                         reward_extra.setdefault("B_judge_bonus", []).append(0.0)
             else:
