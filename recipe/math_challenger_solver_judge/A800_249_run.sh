@@ -72,12 +72,10 @@ python3 -m recipe.math_challenger_solver_judge.main_ppo \
   judge.judge_rollout_n=1 \
   judge.actor_rollout_ref.model.path="${JUDGE_MODEL_PATH:-/data3/yyy/models/Qwen3-4B-Instruct-2507}" \
   math_challenger_judge.alpha=0.1 \
-  math_challenger_judge.beta=0.1 \
   math_challenger_judge.score_min=1.0 \
   math_challenger_judge.score_max=10.0 \
   math_challenger_judge.judge_format_weight=0.5 \
   math_challenger_judge.judge_range_weight=0.5 \
-  math_challenger_judge.beta_penalty=0.1 \
   math_challenger_judge.judge_dominant=true \
   "${HIST_SEED_ARGS[@]}" \
   "$@"
