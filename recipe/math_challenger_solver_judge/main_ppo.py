@@ -94,14 +94,17 @@ class TaskRunner:
         from verl.single_controller.ray import RayWorkerGroup
         from verl.workers.fsdp_workers import ActorRolloutRefWorker
 
+        no_train_j = bool(OmegaConf.select(config, "judge.no_train", default=False))
+
         role_worker_mapping = {
             Role.ActorRollout_A: ray.remote(ActorRolloutRefWorker),
             Role.ActorRollout_B: ray.remote(ActorRolloutRefWorker),
             Role.ActorRollout_J: ray.remote(ActorRolloutRefWorker),
             Role.RefPolicy_A: ray.remote(ActorRolloutRefWorker),
             Role.RefPolicy_B: ray.remote(ActorRolloutRefWorker),
-            Role.RefPolicy_J: ray.remote(ActorRolloutRefWorker),
         }
+        if not no_train_j:
+            role_worker_mapping[Role.RefPolicy_J] = ray.remote(ActorRolloutRefWorker)
 
         nn = int(config.trainer.nnodes)
         ga = int(config.trainer.n_gpus_per_node)
@@ -120,8 +123,9 @@ class TaskRunner:
             Role.ActorRollout_J: "pool_J",
             Role.RefPolicy_A: "pool_A",
             Role.RefPolicy_B: "pool_B",
-            Role.RefPolicy_J: "pool_J",
         }
+        if not no_train_j:
+            mapping[Role.RefPolicy_J] = "pool_J"
 
         import recipe.math_challenger_solver_judge.reward  # noqa: F401
 

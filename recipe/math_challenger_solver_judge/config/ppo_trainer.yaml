@@ -1088,8 +1088,12 @@ math_challenger:
 # Third actor (judge). main_ppo merges actor_rollout_ref if judge.actor_rollout_ref is null
 judge:
   entropy_zero: False
+
   # 覆盖合并后的 actor_rollout_ref.rollout.n：Judge 每题/每答采样条数，供 GRPO 组内比较；多数决分数见 score_parse.majority_vote_judge_score
   judge_rollout_n: 4
+
+  # 若为 True，Judge 仅做推理，不做 PPO 更新，也不需要 RefPolicy_J。适合使用固定的 Instruct 模型作为 Judge。
+  no_train: False
 
 # Shaping for A/B from judge <score> (read by MathMajorityJudgeRewardManager)
 math_challenger_judge:

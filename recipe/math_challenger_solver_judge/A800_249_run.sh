@@ -68,6 +68,9 @@ python3 -m recipe.math_challenger_solver_judge.main_ppo \
   math_challenger.initial_history_gsm8k_parquet="${IH_PARQUET}" \
   math_challenger.initial_history_num_problems="${GSM8K_INITIAL_HISTORY_N:-10}" \
   judge.entropy_zero=false \
+  judge.no_train=true \
+  judge.judge_rollout_n=1 \
+  judge.actor_rollout_ref.model.path="${JUDGE_MODEL_PATH:-/data3/yyy/models/Qwen3-4B-Instruct-2507}" \
   math_challenger_judge.alpha=0.1 \
   math_challenger_judge.beta=0.1 \
   math_challenger_judge.score_min=1.0 \

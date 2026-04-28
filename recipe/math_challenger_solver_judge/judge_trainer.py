@@ -195,11 +195,13 @@ class MathChallengerJudgeTrainer(MathChallengerTrainer):
             self.role_worker_mapping[Role.RefPolicy_B], config=self.config_B.actor_rollout_ref, role="ref"
         )
         self.resource_pool_to_cls[resource_pool]["ref_policy_B"] = ref_policy_cls_B
-        resource_pool = self.resource_pool_manager.get_resource_pool(Role.RefPolicy_J)
-        ref_policy_cls_J = RayClassWithInitArgs(
-            self.role_worker_mapping[Role.RefPolicy_J], config=self.config_J.actor_rollout_ref, role="ref"
-        )
-        self.resource_pool_to_cls[resource_pool]["ref_policy_J"] = ref_policy_cls_J
+        _no_train_j = bool(OmegaConf.select(self.config, "judge.no_train", default=False))
+        if not _no_train_j:
+            resource_pool = self.resource_pool_manager.get_resource_pool(Role.RefPolicy_J)
+            ref_policy_cls_J = RayClassWithInitArgs(
+                self.role_worker_mapping[Role.RefPolicy_J], config=self.config_J.actor_rollout_ref, role="ref"
+            )
+            self.resource_pool_to_cls[resource_pool]["ref_policy_J"] = ref_policy_cls_J
         all_wg = {}
         wg_kwargs: dict = {}
         for resource_pool, class_dict in self.resource_pool_to_cls.items():
@@ -213,8 +215,11 @@ class MathChallengerJudgeTrainer(MathChallengerTrainer):
         self.ref_policy_wg_A.init_model()
         self.ref_policy_wg_B = all_wg["ref_policy_B"]
         self.ref_policy_wg_B.init_model()
-        self.ref_policy_wg_J = all_wg["ref_policy_J"]
-        self.ref_policy_wg_J.init_model()
+        if not _no_train_j:
+            self.ref_policy_wg_J = all_wg["ref_policy_J"]
+            self.ref_policy_wg_J.init_model()
+        else:
+            self.ref_policy_wg_J = None
         self.actor_rollout_wg_A = all_wg["actor_rollout_A"]
         self.actor_rollout_wg_A.init_model()
         self.actor_rollout_wg_B = all_wg["actor_rollout_B"]
@@ -232,19 +237,21 @@ class MathChallengerJudgeTrainer(MathChallengerTrainer):
         max_k = self.config.trainer.get("max_actor_ckpt_to_keep", None) if not remove_prev else 1
         a_loc = os.path.join(local_global_step_folder, "actor_A")
         b_loc = os.path.join(local_global_step_folder, "actor_B")
-        j_loc = os.path.join(local_global_step_folder, "actor_J")
         a_rem = None if self.config.trainer.default_hdfs_dir is None else os.path.join(
             self.config.trainer.default_hdfs_dir, f"global_step_{self.global_steps}", "actor_A"
         )
         b_rem = None if self.config.trainer.default_hdfs_dir is None else os.path.join(
             self.config.trainer.default_hdfs_dir, f"global_step_{self.global_steps}", "actor_B"
         )
-        j_rem = None if self.config.trainer.default_hdfs_dir is None else os.path.join(
-            self.config.trainer.default_hdfs_dir, f"global_step_{self.global_steps}", "actor_J"
-        )
         self.actor_rollout_wg_A.save_checkpoint(a_loc, a_rem, self.global_steps, max_ckpt_to_keep=max_k)
         self.actor_rollout_wg_B.save_checkpoint(b_loc, b_rem, self.global_steps, max_ckpt_to_keep=max_k)
-        self.actor_rollout_wg_J.save_checkpoint(j_loc, j_rem, self.global_steps, max_ckpt_to_keep=max_k)
+        _no_train_j = bool(OmegaConf.select(self.config, "judge.no_train", default=False))
+        if not _no_train_j:
+            j_loc = os.path.join(local_global_step_folder, "actor_J")
+            j_rem = None if self.config.trainer.default_hdfs_dir is None else os.path.join(
+                self.config.trainer.default_hdfs_dir, f"global_step_{self.global_steps}", "actor_J"
+            )
+            self.actor_rollout_wg_J.save_checkpoint(j_loc, j_rem, self.global_steps, max_ckpt_to_keep=max_k)
         torch.save(self.train_dataloader.state_dict(), os.path.join(local_global_step_folder, "data.pt"))
         torch.save(self._question_history.state_dict(), os.path.join(local_global_step_folder, "a_question_history.pt"))
         torch.save(
@@ -282,9 +289,10 @@ class MathChallengerJudgeTrainer(MathChallengerTrainer):
         dl = self.config.trainer.del_local_ckpt_after_load
         self.actor_rollout_wg_A.load_checkpoint(os.path.join(gsf, "actor_A"), del_local_after_load=dl)
         self.actor_rollout_wg_B.load_checkpoint(os.path.join(gsf, "actor_B"), del_local_after_load=dl)
-        jp = os.path.join(gsf, "actor_J")
-        if os.path.isdir(jp):
-            self.actor_rollout_wg_J.load_checkpoint(jp, del_local_after_load=dl)
+        if not bool(OmegaConf.select(self.config, "judge.no_train", default=False)):
+            jp = os.path.join(gsf, "actor_J")
+            if os.path.isdir(jp):
+                self.actor_rollout_wg_J.load_checkpoint(jp, del_local_after_load=dl)
         dlp = os.path.join(gsf, "data.pt")
         if os.path.exists(dlp):
             self.train_dataloader.load_state_dict(torch.load(dlp, weights_only=False))
@@ -550,6 +558,10 @@ class MathChallengerJudgeTrainer(MathChallengerTrainer):
         return prob_norm
 
     def _maybe_update_judge(self, has_b: bool, timing_raw: dict) -> None:
+        if bool(OmegaConf.select(self.config, "judge.no_train", default=False)):
+            self._judge_gen_merged = None
+            self._judge_row_rewards = []
+            return
         if not has_b or self._judge_gen_merged is None or not self._judge_row_rewards:
             return
         n_j = len(self._judge_gen_merged)
@@ -575,6 +587,7 @@ class MathChallengerJudgeTrainer(MathChallengerTrainer):
             rt = rt_pad
         with marked_timer("time/old_log_prob_J", timing_raw, color="purple"):
             batch_J = gen_j_pad.union(self.actor_rollout_wg_J.compute_log_prob(gen_j_pad))
+        assert self.ref_policy_wg_J is not None, "ref_policy_wg_J should not be None when judge.no_train=False"
         with marked_timer("time/ref_judge", timing_raw, color="orange"):
             batch_J = batch_J.union(self.ref_policy_wg_J.compute_ref_log_prob(batch_J))
         # 不在此 unpad：len 须保持为 dp_j 的倍数，供 compute_log_prob 与 update_actor 的 chunk 一致（否则 unpad 后 63%2 在 update 再失败）。
