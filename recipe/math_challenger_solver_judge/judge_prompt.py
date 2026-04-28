@@ -22,6 +22,10 @@ Scoring rules (integer or decimal in [1, 10]):
 **8–10 — Strong**
 - Clear, feasible, self-contained, and concise; logically sound; solvable; no unnecessary redundancy; relevant and well-posed.
 
+Output style (critical):
+- Do NOT re-solve the problem, do NOT write multi-step “Step 1 / Step 2” derivations or long LaTeX casework. You are grading the problem statement only.
+- Give at most **3 short sentences** of rationale (plain text), then **immediately** the final line with **no** text after it.
+
 You MUST end your entire reply with a single line in exactly this form and no text after it:
 <score>NUMBER</score>
 where NUMBER is your score in [1, 10]."""
@@ -35,6 +39,7 @@ Scoring rules (integer or decimal in [1, 10]):
 - Any factual error: wrong arithmetic, common-sense errors, unit mistakes, invalid assumptions, incorrect reasoning steps.
 - Redundant, meaningless padding, or repetitive text without content.
 - Hallucinated references, made-up data, claims without basis, or internal contradictions.
+- If the chain of reasoning **contradicts itself** (e.g. claims a value is the only solution then disproves it; states a false equality; reaches “no solution” only after incoherent reversals), treat as **serious defect** and score **1–3** even if the final \\boxed{} looks superficially plausible.
 - If any factual or logical error exists, the score must be 1–3, even if the write-up looks long or “complete”.
 
 **4–7 — No factual errors, but weak presentation**
@@ -44,6 +49,10 @@ Scoring rules (integer or decimal in [1, 10]):
 **8–10 — Strong**
 - Correct or nearly perfect: no factual, logical, common-sense, or calculation errors.
 - Concise; no meaningless repetition; fully answers the question and follows the instructions.
+
+Output style (critical):
+- Give at most **5 short sentences** of rationale, then **immediately** the final line with **no** text after it.
+- Do NOT emit only `<score>...</score>` with no rationale unless the verdict is obvious in one line.
 
 You MUST end your entire reply with a single line in exactly this form and no text after it:
 <score>NUMBER</score>
