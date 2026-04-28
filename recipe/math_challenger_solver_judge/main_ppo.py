@@ -138,6 +138,7 @@ class TaskRunner:
             alpha=float(mcj.get("alpha", 0.1)),
             beta=float(mcj.get("beta", 0.1)),
             beta_penalty=float(mcj.get("beta_penalty", 0.0)),
+            judge_dominant=bool(mcj.get("judge_dominant", False)),
         )
 
         from verl.workers.reward_manager import NaiveRewardManager

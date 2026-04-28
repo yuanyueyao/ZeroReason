@@ -78,5 +78,6 @@ python3 -m recipe.math_challenger_solver_judge.main_ppo \
   math_challenger_judge.judge_format_weight=0.5 \
   math_challenger_judge.judge_range_weight=0.5 \
   math_challenger_judge.beta_penalty=0.1 \
+  math_challenger_judge.judge_dominant=true \
   "${HIST_SEED_ARGS[@]}" \
   "$@"

@@ -1112,10 +1112,14 @@ math_challenger_judge:
   # 单条 judge 行奖励：与多数票 winning 整数档一致时额外加 w_m（PPO/GRPO）
   judge_majority_match_weight: 0.2
 
-  # B 的 judge 奖励惩罚系数：adj = beta*jv - beta_penalty*(1-jv)
+  # B 的 judge 奖励惩罚系数（叠加模式）：adj = beta*jv - beta_penalty*(1-jv)
   # beta_penalty=0 时向后兼容（只加分）；设为与 beta 相同值可形成以 jv=0.5 为中性的对称信号
-  # 推荐起点：beta_penalty = beta（即默认 0.1），可对矛盾推理产生 ~0.1 的惩罚
   beta_penalty: 0.0
+
+  # judge 主导模式：True 时多数票正确的 B 轨迹奖励直接替换为 2*jv（范围 [0,2]）
+  # 可从根源消除 reward hacking（矛盾推理 jv≈0.1 → reward≈0.2，优秀推理 jv≈0.9 → reward≈1.8）
+  # 开启后 beta / beta_penalty 失效；judge 不可用时退化为普通多数投票 reward=1
+  judge_dominant: False
 
   # 控制台：打印前 N 个题面 judge 组、前 M 行 B 的解答 judge；每条回复最多字符数
   log_judge_problem_groups: 2
