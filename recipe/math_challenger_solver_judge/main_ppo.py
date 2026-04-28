@@ -58,12 +58,14 @@ class TaskRunner:
         with open_dict(config):
             if OmegaConf.select(config, "judge") is None:
                 config.judge = OmegaConf.create({})
-            if OmegaConf.select(config, "judge.actor_rollout_ref") is None:
-                with open_dict(config.judge):
-                    config.judge.actor_rollout_ref = OmegaConf.merge(
-                        OmegaConf.create({}),
-                        config.actor_rollout_ref,
-                    )
+            # 始终以 actor_rollout_ref 为 base，再将 judge.actor_rollout_ref（可能只含 model.path 等
+            # 少量覆盖项）叠加其上，从而支持 CLI 通过 judge.actor_rollout_ref.model.path= 指定不同模型。
+            _judge_override = OmegaConf.select(config, "judge.actor_rollout_ref", default=None)
+            _full_j = OmegaConf.merge(OmegaConf.create({}), config.actor_rollout_ref)
+            if _judge_override is not None:
+                _full_j = OmegaConf.merge(_full_j, _judge_override)
+            with open_dict(config.judge):
+                config.judge.actor_rollout_ref = _full_j
             with open_dict(config.judge.actor_rollout_ref.rollout):
                 # 与 A/B 的 rollout.n 解耦；GRPO 需 judge 每题多条样本（默认 4，见 judge.judge_rollout_n）
                 jn = int(OmegaConf.select(config, "judge.judge_rollout_n", default=4) or 4)

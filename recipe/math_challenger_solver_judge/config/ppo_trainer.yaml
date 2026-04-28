@@ -1085,7 +1085,7 @@ math_challenger:
   # Console: max A rollouts to print per step (problem text or raw response if parse failed)
   log_A_samples_per_step: 4
 
-# Third actor (judge). main_ppo merges actor_rollout_ref if judge.actor_rollout_ref is null
+# Third actor (judge). main_ppo always merges actor_rollout_ref as base, then overlays judge.actor_rollout_ref on top.
 judge:
   entropy_zero: False
 
@@ -1094,6 +1094,11 @@ judge:
 
   # 若为 True，Judge 仅做推理，不做 PPO 更新，也不需要 RefPolicy_J。适合使用固定的 Instruct 模型作为 Judge。
   no_train: False
+
+  # judge 模型路径覆盖（声明此 key 以允许 CLI 通过 judge.actor_rollout_ref.model.path= 覆盖）
+  actor_rollout_ref:
+    model:
+      path: null
 
 # Shaping for A/B from judge <score> (read by MathMajorityJudgeRewardManager)
 math_challenger_judge:
