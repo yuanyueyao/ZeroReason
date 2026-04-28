@@ -319,6 +319,7 @@ class MathChallengerJudgeTrainer(MathChallengerTrainer):
             raw = self.tokenizer_J.apply_chat_template(
                 [{"role": "system", "content": system}, {"role": "user", "content": u}],
                 add_generation_prompt=True, tokenize=False,
+                enable_thinking=False,
             )
             mi = self.tokenizer_J(raw, return_tensors="pt", add_special_tokens=False)
             input_ids, attention_mask = postprocess_data(
