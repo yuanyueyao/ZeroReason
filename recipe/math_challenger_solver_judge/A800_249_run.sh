@@ -2,10 +2,6 @@
 # math_challenger_solver_judge: challenger (A) + solver (B) + trainable judge (J), <score>...</score>.
 # Requires 3× trainer.n_gpus_per_node (pools A / B / J) × nnodes GPUs when all three use the same per-node count.
 # Layout mirrors recipe/math_challenger_solver/scripts/A800-250-run.sh
-#
-# 日志：默认写入 logs/<experiment_name>_<timestamp>.log，同时打印到终端。
-# 覆盖路径：LOG_FILE=/path/to/custom.log bash A800_249_run.sh
-# 禁用：LOG_FILE="" bash A800_249_run.sh
 set -eux
 export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0,1,2,3,4,5}"
 
@@ -28,25 +24,6 @@ if [[ -n "${GSM8K_INITIAL_HISTORY_SEED:-}" ]]; then
   HIST_SEED_ARGS+=(+math_challenger.initial_history_seed="${GSM8K_INITIAL_HISTORY_SEED}")
 fi
 
-LR_B_ARGS=()
-if [[ -n "${LR_B:-}" ]]; then
-  LR_B_ARGS=(actor_rollout_ref_b.actor.optim.lr="${LR_B}")
-fi
-
-# ── 日志文件 ────────────────────────────────────────────────────────────────
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-_EXP="${EXPERIMENT_NAME:-Qwen3-4B-Base}"
-_TS="$(date +%Y%m%d_%H%M%S)"
-_DEFAULT_LOG="${SCRIPT_DIR}/logs/${_EXP}_${_TS}.log"
-LOG_FILE="${LOG_FILE-${_DEFAULT_LOG}}"   # 空字符串可显式禁用
-if [[ -n "${LOG_FILE}" ]]; then
-  mkdir -p "$(dirname "${LOG_FILE}")"
-  echo "[run] logging to ${LOG_FILE}"
-  # 将后续所有 stdout/stderr 同时输出到终端和日志文件
-  exec > >(tee -a "${LOG_FILE}") 2>&1
-fi
-# ────────────────────────────────────────────────────────────────────────────
-
 python3 -m recipe.math_challenger_solver_judge.main_ppo \
   algorithm.adv_estimator=grpo \
   algorithm.use_kl_in_reward=False \
@@ -55,6 +32,7 @@ python3 -m recipe.math_challenger_solver_judge.main_ppo \
   data.train_batch_size=1024 \
   data.max_prompt_length=1024 \
   data.max_response_length=2048 \
+  actor_rollout_ref_b.actor.optim.lr=3e-6 \
   data.filter_overlong_prompts=True \
   data.truncation='error' \
   actor_rollout_ref.model.path="${MODEL_PATH:-/data3/yyy/models/Qwen3-4B-Base}" \
@@ -100,6 +78,5 @@ python3 -m recipe.math_challenger_solver_judge.main_ppo \
   math_challenger_judge.judge_format_weight=0.5 \
   math_challenger_judge.judge_range_weight=0.5 \
   math_challenger_judge.judge_dominant=true \
-  "${LR_B_ARGS[@]}" \
   "${HIST_SEED_ARGS[@]}" \
   "$@"
