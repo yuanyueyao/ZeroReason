@@ -2,6 +2,10 @@
 # math_challenger_solver_judge: challenger (A) + solver (B) + trainable judge (J), <score>...</score>.
 # Requires 3× trainer.n_gpus_per_node (pools A / B / J) × nnodes GPUs when all three use the same per-node count.
 # Layout mirrors recipe/math_challenger_solver/scripts/A800-250-run.sh
+#
+# 日志：默认写入 logs/<experiment_name>_<timestamp>.log，同时打印到终端。
+# 覆盖路径：LOG_FILE=/path/to/custom.log bash A800_249_run.sh
+# 禁用：LOG_FILE="" bash A800_249_run.sh
 set -eux
 export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0,1,2,3,4,5}"
 
@@ -28,6 +32,20 @@ LR_B_ARGS=()
 if [[ -n "${LR_B:-}" ]]; then
   LR_B_ARGS=(actor_rollout_ref_b.actor.optim.lr="${LR_B}")
 fi
+
+# ── 日志文件 ────────────────────────────────────────────────────────────────
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+_EXP="${EXPERIMENT_NAME:-Qwen3-4B-Base}"
+_TS="$(date +%Y%m%d_%H%M%S)"
+_DEFAULT_LOG="${SCRIPT_DIR}/logs/${_EXP}_${_TS}.log"
+LOG_FILE="${LOG_FILE-${_DEFAULT_LOG}}"   # 空字符串可显式禁用
+if [[ -n "${LOG_FILE}" ]]; then
+  mkdir -p "$(dirname "${LOG_FILE}")"
+  echo "[run] logging to ${LOG_FILE}"
+  # 将后续所有 stdout/stderr 同时输出到终端和日志文件
+  exec > >(tee -a "${LOG_FILE}") 2>&1
+fi
+# ────────────────────────────────────────────────────────────────────────────
 
 python3 -m recipe.math_challenger_solver_judge.main_ppo \
   algorithm.adv_estimator=grpo \
