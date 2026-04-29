@@ -48,7 +48,7 @@ python3 -m recipe.math_challenger_solver_judge.main_ppo \
   actor_rollout_ref.rollout.name=vllm \
   actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu=16 \
   actor_rollout_ref.ref.fsdp_config.param_offload=False \
-  actor_rollout_ref.rollout.gpu_memory_utilization=0.55 \
+  actor_rollout_ref.rollout.gpu_memory_utilization=0.6 \
   actor_rollout_ref.rollout.max_num_seqs=256 \
   actor_rollout_ref.rollout.max_num_batched_tokens=16384 \
   actor_rollout_ref.rollout.n=8 \

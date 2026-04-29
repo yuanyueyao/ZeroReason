@@ -57,7 +57,7 @@ python3 -m recipe.math_challenger_solver.main_ppo \
   trainer.logger=['console','wandb'] \
   trainer.test_freq=20 \
   trainer.project_name=math_challenger_solver \
-  trainer.experiment_name=v1 \
+  trainer.experiment_name=prompt_v2 \
   reward_model.num_examine=2 \
   math_challenger.history_window_size=10 \
   math_challenger.log_groups_per_step=2 \
