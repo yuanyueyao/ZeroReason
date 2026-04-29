@@ -72,6 +72,12 @@ class MathChallengerJudgeTrainer(MathChallengerTrainer):
         if tokenizer_J is None:
             raise TypeError("MathChallengerJudgeTrainer requires tokenizer_J=...")
         super().__init__(*args, **kwargs)
+        # Apply B-specific lr override (declared in actor_rollout_ref_b.actor.optim.lr).
+        # Must happen after super().__init__() which constructs self.config_B from the base config.
+        _lr_b = OmegaConf.select(self.config, "actor_rollout_ref_b.actor.optim.lr", default=None)
+        if _lr_b is not None:
+            with open_dict(self.config_B):
+                self.config_B.actor_rollout_ref.actor.optim.lr = float(_lr_b)
         self.tokenizer_J = tokenizer_J
         self.config_J = _merge_judge_config(self.config)
         if bool(OmegaConf.select(self.config, "judge.entropy_zero", default=False)):
