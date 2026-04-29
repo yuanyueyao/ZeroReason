@@ -1085,6 +1085,14 @@ math_challenger:
   # Console: max A rollouts to print per step (problem text or raw response if parse failed)
   log_A_samples_per_step: 4
 
+# B-specific overrides (ray_trainer reads these and applies to config_B after copying from actor_rollout_ref).
+# Only the declared sub-keys need to be set; all other B settings fall back to actor_rollout_ref.
+actor_rollout_ref_b:
+  actor:
+    optim:
+      # Independent learning rate for the solver (B). null = use actor_rollout_ref.actor.optim.lr.
+      lr: null
+
 # Third actor (judge). main_ppo always merges actor_rollout_ref as base, then overlays judge.actor_rollout_ref on top.
 judge:
   entropy_zero: False

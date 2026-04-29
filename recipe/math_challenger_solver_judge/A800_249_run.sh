@@ -24,6 +24,11 @@ if [[ -n "${GSM8K_INITIAL_HISTORY_SEED:-}" ]]; then
   HIST_SEED_ARGS+=(+math_challenger.initial_history_seed="${GSM8K_INITIAL_HISTORY_SEED}")
 fi
 
+LR_B_ARGS=()
+if [[ -n "${LR_B:-}" ]]; then
+  LR_B_ARGS=(actor_rollout_ref_b.actor.optim.lr="${LR_B}")
+fi
+
 python3 -m recipe.math_challenger_solver_judge.main_ppo \
   algorithm.adv_estimator=grpo \
   algorithm.use_kl_in_reward=False \
@@ -77,5 +82,6 @@ python3 -m recipe.math_challenger_solver_judge.main_ppo \
   math_challenger_judge.judge_format_weight=0.5 \
   math_challenger_judge.judge_range_weight=0.5 \
   math_challenger_judge.judge_dominant=true \
+  "${LR_B_ARGS[@]}" \
   "${HIST_SEED_ARGS[@]}" \
   "$@"

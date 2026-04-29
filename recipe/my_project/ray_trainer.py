@@ -345,10 +345,14 @@ class MyTrainer:
         self.tokenizer_B = tokenizer_B
         self.processor = processor
         self.config = config
-        # Full config for model-B workers; only difference enforced here: no entropy regularizer on B's actor.
+        # Full config for model-B workers: start from A's config, then apply B-specific overrides.
         self.config_B = OmegaConf.create(OmegaConf.to_container(config, resolve=True))
         with open_dict(self.config_B):
             self.config_B.actor_rollout_ref.actor.entropy_coeff = 0
+            # Optional per-B learning rate: set via actor_rollout_ref_b.actor.optim.lr in YAML/CLI.
+            _lr_b = OmegaConf.select(config, "actor_rollout_ref_b.actor.optim.lr", default=None)
+            if _lr_b is not None:
+                self.config_B.actor_rollout_ref.actor.optim.lr = float(_lr_b)
 
         self.reward_fn = reward_fn
         self.val_reward_fn = val_reward_fn
