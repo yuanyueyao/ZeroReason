@@ -1,0 +1,677 @@
+# MRSD Trainer 配置
+# 基础：完整复制自 verl/trainer/config/ppo_trainer.yaml
+# 尾部追加 MRSD 专属字段，并覆写需要调整的值
+
+# dataset config
+data:
+
+  tokenizer: null
+
+  use_shm: False
+
+  train_files: /data3/yyy/verl/data/mrsd/train_level45.parquet
+
+  val_files: /data3/yyy/verl/data/mrsd/test.parquet
+
+  prompt_key: prompt
+
+  reward_fn_key: data_source
+
+  # train_batch_size * rollout.n(1) = 64; 64 % 8(gpus) = 0 ✓
+  # 64 >= actor.ppo_mini_batch_size(64) ✓
+  max_prompt_length: 2048
+
+  max_response_length: 3072
+
+  train_batch_size: 64
+
+  val_batch_size: null
+
+  return_raw_input_ids: False
+
+  return_raw_chat: False
+
+  return_full_prompt: False
+
+  shuffle: True
+
+  validation_shuffle: False
+
+  filter_overlong_prompts: False
+
+  filter_overlong_prompts_workers: 1
+
+  truncation: error
+
+  image_key: images
+
+  video_key: videos
+
+  trust_remote_code: False
+
+  custom_cls:
+
+    path: null
+
+    name: null
+
+  # ── MRSD 专用：死区问题文件 ──────────────────────────────────────
+  mrsd_problems_path: /data3/yyy/verl/data/mrsd/dead_zone_problems.jsonl
+
+# config for actor, rollout and reference model
+actor_rollout_ref:
+
+  hybrid_engine: true
+
+  model:
+
+    path: /data3/yyy/models/Qwen3-4B-Instruct-2507
+
+    custom_chat_template: null
+
+    use_shm: false
+
+    external_lib: null
+
+    override_config: {}
+
+    enable_gradient_checkpointing: true
+
+    enable_activation_offload: false
+
+    use_remove_padding: false
+
+    lora_rank: 0
+
+    lora_alpha: 16
+
+    target_modules: all-linear
+
+    use_liger: false
+
+    use_fused_kernels: false
+
+    fused_kernel_options:
+
+      impl_backend: torch
+
+    trust_remote_code: false
+
+  actor:
+
+    strategy: fsdp
+
+    ppo_mini_batch_size: 64
+
+    ppo_micro_batch_size: null
+
+    # 使用 per_gpu；与 ppo_micro_batch_size 互斥，恰好一个非 null
+    ppo_micro_batch_size_per_gpu: 4
+
+    use_dynamic_bsz: false
+
+    ppo_max_token_len_per_gpu: 16384
+
+    grad_clip: 1.0
+
+    clip_ratio: 0.2
+
+    clip_ratio_low: 0.2
+
+    clip_ratio_high: 0.2
+
+    policy_loss:
+
+      loss_mode: "vanilla"
+
+      clip_cov_ratio: 0.0002
+
+      clip_cov_lb: 1.0
+
+      clip_cov_ub: 5.0
+
+      kl_cov_ratio: 0.0002
+
+      ppo_kl_coef: 0.1
+
+    clip_ratio_c: 3.0
+
+    loss_agg_mode: token-mean
+
+    entropy_coeff: 0
+
+    use_kl_loss: false
+
+    # 关闭 torch.compile 避免 CUDA 版本问题
+    use_torch_compile: false
+
+    kl_loss_coef: 0.001
+
+    kl_loss_type: low_var_kl
+
+    ppo_epochs: 1
+
+    shuffle: false
+
+    ulysses_sequence_parallel_size: 1
+
+    entropy_from_logits_with_chunking: False
+
+    entropy_checkpointing: False
+
+    checkpoint:
+
+      save_contents: ['model', 'optimizer', 'extra']
+
+      load_contents: ${actor_rollout_ref.actor.checkpoint.save_contents}
+
+    optim:
+
+      lr: 1e-5
+
+      # 负值 → 使用 lr_warmup_steps_ratio
+      lr_warmup_steps: -1
+
+      lr_warmup_steps_ratio: 0.05
+
+      min_lr_ratio: 0.0
+
+      num_cycles: 0.5
+
+      # verl 只支持 "constant" 和 "cosine"
+      warmup_style: constant
+
+      total_training_steps: -1
+
+      weight_decay: 0.01
+
+    fsdp_config:
+
+      wrap_policy:
+
+        min_num_params: 0
+
+      param_offload: false
+
+      optimizer_offload: false
+
+      offload_policy: false
+
+      reshard_after_forward: true
+
+      fsdp_size: -1
+
+      forward_prefetch: False
+
+    profiler:
+
+      discrete: False
+
+      all_ranks: False
+
+      ranks: null
+
+  ref:
+
+    strategy: ${actor_rollout_ref.actor.strategy}
+
+    fsdp_config:
+
+      param_offload: False
+
+      reshard_after_forward: True
+
+      forward_prefetch: False
+
+      wrap_policy:
+
+        min_num_params: 0
+
+    use_torch_compile: ${actor_rollout_ref.actor.use_torch_compile}
+
+    log_prob_micro_batch_size: null
+
+    log_prob_micro_batch_size_per_gpu: 4
+
+    log_prob_use_dynamic_bsz: ${actor_rollout_ref.actor.use_dynamic_bsz}
+
+    log_prob_max_token_len_per_gpu: ${actor_rollout_ref.actor.ppo_max_token_len_per_gpu}
+
+    ulysses_sequence_parallel_size: ${actor_rollout_ref.actor.ulysses_sequence_parallel_size}
+
+    entropy_from_logits_with_chunking: False
+
+    entropy_checkpointing: False
+
+    profiler:
+
+      discrete: False
+
+      all_ranks: False
+
+      ranks: null
+
+  rollout:
+
+    name: vllm
+
+    mode: sync
+
+    temperature: 0.7
+
+    top_k: -1
+
+    top_p: 0.9
+
+    use_fire_sampling: False
+
+    prompt_length: ${data.max_prompt_length}
+
+    response_length: ${data.max_response_length}
+
+    dtype: bfloat16
+
+    gpu_memory_utilization: 0.5
+
+    ignore_eos: False
+
+    # enforce_eager=True 才能配合 free_cache_engine=True
+    enforce_eager: True
+
+    free_cache_engine: True
+
+    load_format: dummy_dtensor
+
+    layered_summon: False
+
+    # 4B 小模型用 TP=1
+    tensor_model_parallel_size: 1
+
+    max_num_batched_tokens: 16384
+
+    max_model_len: null
+
+    max_num_seqs: 512
+
+    log_prob_micro_batch_size: null
+
+    # 与 log_prob_micro_batch_size 互斥，恰好一个非 null
+    log_prob_micro_batch_size_per_gpu: 4
+
+    log_prob_use_dynamic_bsz: ${actor_rollout_ref.actor.use_dynamic_bsz}
+
+    log_prob_max_token_len_per_gpu: ${actor_rollout_ref.actor.ppo_max_token_len_per_gpu}
+
+    disable_log_stats: True
+
+    enable_chunked_prefill: True
+
+    do_sample: True
+
+    n: 1
+
+    multi_stage_wake_up: false
+
+    engine_kwargs:
+
+      vllm:
+
+        swap_space: null
+
+        disable_mm_preprocessor_cache: False
+
+      sglang:
+
+        attention_backend: null
+
+    val_kwargs:
+
+      top_k: -1
+
+      top_p: 1.0
+
+      temperature: 0
+
+      n: 1
+
+      do_sample: False
+
+    multi_turn:
+
+      enable: False
+
+      max_assistant_turns: null
+
+      tool_config_path: null
+
+      max_user_turns: null
+
+      interaction_config_path: null
+
+      completion_callback: null
+
+      use_inference_chat_template: False
+
+      tokenization_sanity_check_mode: strict
+
+      format: hermes
+
+    calculate_log_probs: False
+
+    profiler:
+
+      discrete: False
+
+      all_ranks: False
+
+      ranks: null
+
+# configs for the critic（占位；adv_estimator=grpo 时 use_critic=False，不会加载）
+critic:
+
+  rollout_n: ${actor_rollout_ref.rollout.n}
+
+  strategy: ${actor_rollout_ref.actor.strategy}
+
+  optim:
+
+    lr: 1e-5
+
+    lr_warmup_steps_ratio: 0.
+
+    min_lr_ratio: null
+
+    warmup_style: constant
+
+    total_training_steps: -1
+
+    weight_decay: 0.01
+
+  model:
+
+    path: ${actor_rollout_ref.model.path}
+
+    use_shm: False
+
+    tokenizer_path: ${actor_rollout_ref.model.path}
+
+    override_config: {}
+
+    external_lib: ${actor_rollout_ref.model.external_lib}
+
+    enable_gradient_checkpointing: True
+
+    enable_activation_offload: False
+
+    use_remove_padding: False
+
+    trust_remote_code: ${actor_rollout_ref.model.trust_remote_code}
+
+    fsdp_config:
+
+      param_offload: False
+
+      optimizer_offload: False
+
+      offload_policy: False
+
+      reshard_after_forward: True
+
+      wrap_policy:
+
+        min_num_params: 0
+
+      fsdp_size: -1
+
+      forward_prefetch: False
+
+    lora_rank: 0
+
+    lora_alpha: 16
+
+    target_modules: all-linear
+
+  ppo_mini_batch_size: ${actor_rollout_ref.actor.ppo_mini_batch_size}
+
+  ppo_micro_batch_size: null
+
+  ppo_micro_batch_size_per_gpu: null
+
+  forward_micro_batch_size: ${critic.ppo_micro_batch_size}
+
+  forward_micro_batch_size_per_gpu: ${critic.ppo_micro_batch_size_per_gpu}
+
+  use_dynamic_bsz: ${actor_rollout_ref.actor.use_dynamic_bsz}
+
+  ppo_max_token_len_per_gpu: 32768
+
+  forward_max_token_len_per_gpu: ${critic.ppo_max_token_len_per_gpu}
+
+  ulysses_sequence_parallel_size: 1
+
+  ppo_epochs: ${actor_rollout_ref.actor.ppo_epochs}
+
+  shuffle: ${actor_rollout_ref.actor.shuffle}
+
+  grad_clip: 1.0
+
+  cliprange_value: 0.5
+
+  loss_agg_mode: ${actor_rollout_ref.actor.loss_agg_mode}
+
+  checkpoint:
+
+    save_contents: ['model', 'optimizer', 'extra']
+
+    load_contents: ${critic.checkpoint.save_contents}
+
+  profiler:
+
+    discrete: False
+
+    all_ranks: False
+
+    ranks: null
+
+# configs for the reward model（不使用）
+reward_model:
+
+  enable: False
+
+  strategy: ${actor_rollout_ref.actor.strategy}
+
+  model:
+
+    input_tokenizer: ${actor_rollout_ref.model.path}
+
+    path: ~/models/reward_model
+
+    use_shm: False
+
+    external_lib: ${actor_rollout_ref.model.external_lib}
+
+    use_remove_padding: False
+
+    use_fused_kernels: ${actor_rollout_ref.model.use_fused_kernels}
+
+    trust_remote_code: False
+
+    fsdp_config:
+
+      wrap_policy:
+
+        min_num_params: 0
+
+      param_offload: False
+
+      reshard_after_forward: True
+
+      fsdp_size: -1
+
+      forward_prefetch: False
+
+  micro_batch_size: null
+
+  micro_batch_size_per_gpu: null
+
+  max_length: null
+
+  ulysses_sequence_parallel_size: 1
+
+  use_dynamic_bsz: ${critic.use_dynamic_bsz}
+
+  forward_max_token_len_per_gpu: ${critic.forward_max_token_len_per_gpu}
+
+  reward_manager: naive
+
+  launch_reward_fn_async: False
+
+  sandbox_fusion:
+
+    url: null
+
+    max_concurrent: 64
+
+    memory_limit_mb: 1024
+
+  profiler:
+
+    discrete: False
+
+    all_ranks: False
+
+    ranks: null
+
+# custom reward function
+custom_reward_function:
+
+  path: null
+
+  name: compute_score
+
+# algorithm config
+algorithm:
+
+  gamma: 1.0
+
+  lam: 1.0
+
+  # GRPO → use_critic=False，无需 critic worker
+  adv_estimator: grpo
+
+  norm_adv_by_std_in_grpo: True
+
+  use_kl_in_reward: False
+
+  kl_penalty: kl
+
+  kl_ctrl:
+
+    type: fixed
+
+    kl_coef: 0.001
+
+    horizon: 10000
+
+    target_kl: 0.1
+
+  use_pf_ppo: False
+
+  pf_ppo:
+
+    reweight_method: pow
+
+    weight_pow: 2.0
+
+# trainer config
+trainer:
+
+  balance_batch: True
+
+  total_epochs: 1
+
+  total_training_steps: 500
+
+  profile_steps: null
+
+  controller_nsight_options:
+
+    trace: "cuda,nvtx,cublas,ucx"
+
+    cuda-memory-usage: "true"
+
+    cuda-graph-trace: "graph"
+
+  worker_nsight_options: null
+
+  project_name: mrsd
+
+  experiment_name: mrsd-qwen3-4b
+
+  logger: ['console']
+
+  log_val_generations: 0
+
+  rollout_data_dir: null
+
+  validation_data_dir: null
+
+  nnodes: 1
+
+  n_gpus_per_node: 8
+
+  save_freq: 50
+
+  resume_mode: auto
+
+  resume_from_path: null
+
+  val_before_train: False
+
+  val_only: False
+
+  test_freq: 50
+
+  critic_warmup: 0
+
+  default_hdfs_dir: null
+
+  del_local_ckpt_after_load: False
+
+  default_local_dir: /data3/yyy/verl/checkpoints/mrsd
+
+  max_actor_ckpt_to_keep: null
+
+  max_critic_ckpt_to_keep: null
+
+  ray_wait_register_center_timeout: 300
+
+  device: cuda
+
+# Ray 初始化
+ray_init:
+
+  num_cpus: 16
+
+  timeline_json_file: null
+
+# ══════════════════════════════════════════════════════════════════════
+# MRSD 专属超参（上方所有字段均为标准 PPO 字段）
+# ══════════════════════════════════════════════════════════════════════
+mrsd:
+
+  student_rollout_per_problem: 4
+
+  teacher_rollout_per_error: 4
+
+  max_new_tokens_student: 2048
+
+  max_new_tokens_teacher: 3072
+
+  kl_clip: 10.0
+
+  problems_per_step: 8
+
+  graduation_interval: 100
+
+  graduation_pass_at_k: 4
