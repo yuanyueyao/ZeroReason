@@ -3,7 +3,7 @@
 # Requires 3× trainer.n_gpus_per_node (pools A / B / J) × nnodes GPUs when all three use the same per-node count.
 # Layout mirrors recipe/math_challenger_solver/scripts/A800-250-run.sh
 set -eux
-export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0,1,2,3,4,5}"
+export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-2,3,4,5,6,7}"
 
 # vLLM v1 + FlashInfer JIT compiles sampling kernels with nvcc then links with -lcudart.
 # /usr/bin/nvcc is CUDA 11.5 (system); the real CUDA toolkit lives under /usr/local/cuda.
@@ -48,7 +48,7 @@ python3 -m recipe.math_challenger_solver_judge.main_ppo \
   actor_rollout_ref.rollout.name=vllm \
   actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu=16 \
   actor_rollout_ref.ref.fsdp_config.param_offload=False \
-  actor_rollout_ref.rollout.gpu_memory_utilization=0.6 \
+  actor_rollout_ref.rollout.gpu_memory_utilization=0.5 \
   actor_rollout_ref.rollout.max_num_seqs=256 \
   actor_rollout_ref.rollout.max_num_batched_tokens=16384 \
   actor_rollout_ref.rollout.n=8 \
