@@ -271,7 +271,7 @@ actor_rollout_ref:
 
     dtype: bfloat16
 
-    gpu_memory_utilization: 0.5
+    gpu_memory_utilization: 0.6
 
     ignore_eos: False
 
@@ -608,7 +608,7 @@ trainer:
 
   experiment_name: mrsd-qwen3-4b
 
-  logger: ['console']
+  logger: ['console', 'wandb']
 
   log_val_generations: 0
 
@@ -630,7 +630,8 @@ trainer:
 
   val_only: False
 
-  test_freq: 50
+  # 每 10 步做一次 val/pass@1 评估
+  test_freq: 10
 
   critic_warmup: 0
 
@@ -675,3 +676,6 @@ mrsd:
   graduation_interval: 100
 
   graduation_pass_at_k: 4
+
+  # 评估时最多用多少道验证题（平衡速度与精度）
+  val_max_samples: 64

@@ -11,6 +11,7 @@ import time
 from pathlib import Path
 from typing import Optional
 
+import pandas as pd
 import torch
 from omegaconf import DictConfig, OmegaConf
 from tqdm import tqdm
@@ -243,6 +244,60 @@ class MRSDTrainer(RayPPOTrainer):
         return metrics
 
     # ──────────────────────────────────────────────────────────────────
+    # 验证（pass@1 on val set）
+    # ──────────────────────────────────────────────────────────────────
+
+    def _evaluate(self, step: int, logger: Tracking) -> dict:
+        """在 val_files 上跑 pass@1，打印并记录到 wandb。"""
+        val_path = OmegaConf.select(self.config, "data.val_files")
+        if not val_path:
+            return {}
+
+        print(f"\n[eval] step={step}  载入验证集: {val_path}")
+        df = pd.read_parquet(val_path)
+
+        # 每次评估最多用 64 题，避免占用过多时间
+        max_val = int(OmegaConf.select(self.config, "mrsd.val_max_samples", default=64))
+        df = df.head(max_val)
+
+        # 构建 prompt messages
+        messages_list = []
+        ground_truths = []
+        for _, row in df.iterrows():
+            # prompt 字段已是 chat messages list
+            msgs = row["prompt"] if isinstance(row["prompt"], list) else list(row["prompt"])
+            gt = row["reward_model"]["ground_truth"]
+            messages_list.append(msgs)
+            ground_truths.append(gt)
+
+        # 生成（greedy, n=1）：临时换用 val_kwargs 温度
+        gen_batch = _build_gen_batch(self.tokenizer, messages_list, self.max_prompt_len)
+        gen_padded, pad_size = pad_dataproto_to_divisor(gen_batch, self.actor_rollout_wg.world_size)
+        # 使用 greedy（temperature=0）
+        gen_padded.meta_info["do_sample"] = False
+        gen_padded.meta_info["temperature"] = 0.0
+        gen_padded.meta_info["top_p"] = 1.0
+        gen_padded.meta_info["top_k"] = 1
+        out_padded = self.actor_rollout_wg.generate_sequences(gen_padded)
+        out = unpad_dataproto(out_padded, pad_size=pad_size)
+
+        responses = self.tokenizer.batch_decode(
+            out.batch["responses"], skip_special_tokens=True, clean_up_tokenization_spaces=False
+        )
+
+        n_correct = sum(is_correct(r, gt) for r, gt in zip(responses, ground_truths))
+        pass1 = n_correct / len(ground_truths)
+
+        metrics = {
+            "val/pass@1": pass1,
+            "val/n_correct": float(n_correct),
+            "val/n_total": float(len(ground_truths)),
+        }
+        logger.log(data=metrics, step=step)
+        print(f"[eval] step={step}  pass@1={pass1:.3f}  ({n_correct}/{len(ground_truths)})\n")
+        return metrics
+
+    # ──────────────────────────────────────────────────────────────────
     # 主训练循环（覆写官方 fit()）
     # ──────────────────────────────────────────────────────────────────
 
@@ -257,14 +312,21 @@ class MRSDTrainer(RayPPOTrainer):
 
         total_steps = self.total_training_steps
         save_freq = int(OmegaConf.select(self.config.trainer, "save_freq", default=50))
+        test_freq = int(OmegaConf.select(self.config.trainer, "test_freq", default=10))
         ckpt_dir = Path(self.config.trainer.default_local_dir)
         ckpt_dir.mkdir(parents=True, exist_ok=True)
 
         self.global_steps = 0
         self._load_checkpoint()
 
-        print(f"\n[MRSDTrainer] 开始  total_steps={total_steps}  active={self.mrsd_dataset.n_active}\n")
+        # ── step 0：训练前基线评估 ──────────────────────────────────
+        print(f"\n[MRSDTrainer] 开始  total_steps={total_steps}  active={self.mrsd_dataset.n_active}")
+        self._evaluate(step=0, logger=logger)
+
         progress = tqdm(total=total_steps, initial=self.global_steps, desc="MRSD")
+
+        def _scalar(v):
+            return float(v[0]) if isinstance(v, (list, tuple)) else float(v)
 
         while self.global_steps < total_steps:
             if self.mrsd_dataset.n_active == 0:
@@ -283,8 +345,6 @@ class MRSDTrainer(RayPPOTrainer):
 
             logger.log(data=step_metrics, step=self.global_steps)
             progress.update(1)
-            def _scalar(v):
-                return float(v[0]) if isinstance(v, (list, tuple)) else float(v)
             progress.set_postfix({
                 "kl": f"{_scalar(step_metrics.get('mrsd/kl_loss', 0)):.3f}",
                 "pairs": int(_scalar(step_metrics.get("mrsd/n_valid_pairs", 0))),
@@ -294,6 +354,10 @@ class MRSDTrainer(RayPPOTrainer):
             newly = self.mrsd_dataset.maybe_graduate_problems()
             if newly:
                 logger.log({"train/newly_graduated": len(newly)}, step=self.global_steps)
+
+            # ── 定期评估 ──────────────────────────────────────────
+            if self.global_steps % test_freq == 0:
+                self._evaluate(step=self.global_steps, logger=logger)
 
             if self.global_steps % save_freq == 0:
                 self._save_checkpoint()
