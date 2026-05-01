@@ -1,6 +1,6 @@
-# MRSD Trainer 配置
-# 基础：完整复制自 verl/trainer/config/ppo_trainer.yaml
-# 尾部追加 MRSD 专属字段，并覆写需要调整的值
+# RLSD Trainer 配置
+# 基础：复制自 verl/trainer/config/ppo_trainer.yaml
+# 尾部追加 RLSD 专属字段（SD + GRPO 混合训练）
 
 # dataset config
 data:
@@ -19,9 +19,9 @@ data:
 
   # train_batch_size * rollout.n(1) = 64; 64 % 8(gpus) = 0 ✓
   # 64 >= actor.ppo_mini_batch_size(64) ✓
-  max_prompt_length: 2048
+  max_prompt_length: 1024
 
-  max_response_length: 3072
+  max_response_length: 8192
 
   train_batch_size: 64
 
@@ -55,8 +55,8 @@ data:
 
     name: null
 
-  # ── MRSD 专用：死区问题文件 ──────────────────────────────────────
-  mrsd_problems_path: /data3/yyy/verl/data/mrsd/dead_zone_problems.jsonl
+  # ── MRSD 专用：死区问题文件（math_verify 重新验证后的真死区）──
+  mrsd_problems_path: /data3/yyy/verl/data/mrsd/pass_at_k_pass1_resp8192_20260501_095948_dead_zone.jsonl
 
 # config for actor, rollout and reference model
 actor_rollout_ref:
@@ -65,7 +65,7 @@ actor_rollout_ref:
 
   model:
 
-    path: /data3/yyy/models/Qwen3-4B-Instruct-2507
+    path: /data3/yyy/models/Qwen2.5-3B-Instruct
 
     custom_chat_template: null
 
@@ -106,11 +106,12 @@ actor_rollout_ref:
     ppo_micro_batch_size: null
 
     # 使用 per_gpu；与 ppo_micro_batch_size 互斥，恰好一个非 null
-    ppo_micro_batch_size_per_gpu: 4
+    ppo_micro_batch_size_per_gpu: 2
 
     use_dynamic_bsz: false
 
-    ppo_max_token_len_per_gpu: 16384
+    # 8192 response + 2048 prompt = 10240; 需要足够容纳
+    ppo_max_token_len_per_gpu: 24576
 
     grad_clip: 1.0
 
@@ -231,7 +232,7 @@ actor_rollout_ref:
 
     log_prob_micro_batch_size: null
 
-    log_prob_micro_batch_size_per_gpu: 4
+    log_prob_micro_batch_size_per_gpu: 1
 
     log_prob_use_dynamic_bsz: ${actor_rollout_ref.actor.use_dynamic_bsz}
 
@@ -296,7 +297,7 @@ actor_rollout_ref:
     log_prob_micro_batch_size: null
 
     # 与 log_prob_micro_batch_size 互斥，恰好一个非 null
-    log_prob_micro_batch_size_per_gpu: 4
+    log_prob_micro_batch_size_per_gpu: 1
 
     log_prob_use_dynamic_bsz: ${actor_rollout_ref.actor.use_dynamic_bsz}
 
@@ -356,7 +357,8 @@ actor_rollout_ref:
 
       format: hermes
 
-    calculate_log_probs: False
+    # RLSD: GRPO 分支需要 rollout 的 log-probs
+    calculate_log_probs: True
 
     profiler:
 
@@ -606,7 +608,7 @@ trainer:
 
   project_name: mrsd
 
-  experiment_name: mrsd-qwen3-4b
+  experiment_name: rlsd-qwen25-3b
 
   logger: ['console', 'wandb']
 
@@ -657,25 +659,26 @@ ray_init:
   timeline_json_file: null
 
 # ══════════════════════════════════════════════════════════════════════
-# MRSD 专属超参（上方所有字段均为标准 PPO 字段）
+# RLSD 专属超参
 # ══════════════════════════════════════════════════════════════════════
 mrsd:
 
-  student_rollout_per_problem: 4
+  # Student rollout 采样数（per problem）
+  student_rollout_per_problem: 8
 
-  teacher_rollout_per_error: 4
-
-  max_new_tokens_student: 2048
-
-  max_new_tokens_teacher: 3072
-
+  # SD 分支：per-vocab KL clip 阈值 τ
   kl_clip: 10.0
 
+  # GRPO 的 PPO clip 由 actor_rollout_ref.actor.clip_ratio / clip_ratio_low / clip_ratio_high 控制
+
+  # 每步采样多少道题
   problems_per_step: 8
 
+  # 毕业检查间隔（steps）
   graduation_interval: 100
 
+  # 毕业标准：至少采样 k 次
   graduation_pass_at_k: 4
 
-  # 评估时最多用多少道验证题（平衡速度与精度）
+  # 评估时最多用多少道验证题
   val_max_samples: 64

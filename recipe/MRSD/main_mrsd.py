@@ -1,5 +1,5 @@
 """
-MRSD 训练主入口。完全对齐 verl 官方 recipe 模式（参考 recipe/entropy/main_entropy.py）。
+RLSD 训练主入口。
 
 用法：
     bash recipe/MRSD/run_mrsd.sh
@@ -73,7 +73,8 @@ class TaskRunner:
         actor_rollout_cls = MRSDActorRolloutWorker
         ray_worker_group_cls = RayWorkerGroup
 
-        # ── Role → Worker 映射（GRPO 模式：无 critic，无 RM，无 ref）──
+        # ── Role → Worker 映射 ──
+        # ActorRollout: 承载 actor + rollout + ref（colocated）
         role_worker_mapping = {
             Role.ActorRollout: ray.remote(actor_rollout_cls),
         }

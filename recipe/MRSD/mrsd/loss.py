@@ -1,124 +1,98 @@
 """
-MRSD KL Loss 实现。
+RLSD Self-Distillation Loss。
 
-核心公式（§2.3）：
-    L = D_KL( π_teacher(·|x,ŷ,y*) || π_student(·|x) )
-      = Σ_t [ log π_teacher(t) - log π_student(t) ]
+SD 分支：full-distribution clipped KL (D_clip^KL(p_T || p_S))
 
-梯度只通过 π_student（学生侧）传播，π_teacher 做 detach。
+    p_T = p_ref(·|x, y*, ŷ_{<n})  ← frozen ref 在特权 context (含 GT) 下的分布
+    p_S = p_θ(·|x, ŷ_{<n})        ← student 在无特权 context 下的分布
 
-Per-token clipping（§6.3）：
-    style token（\\n, wait 等）的 KL 值可能比数学 token 高 6-15 倍，
-    clip 防止这些 token 主导梯度。
+    D_clip^KL(p_T || p_S) = Σ_v min(p_T(v) · log(p_T(v)/p_S(v)), τ)
+
+梯度只通过 p_S 传播。GRPO 分支直接复用 verl 原生 update_policy。
 """
 
 from __future__ import annotations
 
 import torch
 import torch.nn.functional as F
-from typing import Optional
 
 
-def compute_mrsd_loss(
-    student_logits: torch.Tensor,       # (B, T, V) 学生 context 下的 logits（有梯度）
-    teacher_log_probs: torch.Tensor,    # (B, T)    教师 context 下 token 的 log-probs（detach）
-    response_ids: torch.Tensor,         # (B, T)    教师生成的 token IDs
-    response_mask: torch.Tensor,        # (B, T)    1=response token, 0=prompt token
-    kl_clip: float = 10.0,             # per-token KL 截断阈值（§6.3）
-    loss_reduction: str = "mean",       # "mean" | "sum" | "token_mean"
+def compute_sd_loss_chunked(
+    stu_full_logits: torch.Tensor,      # (B, seq_stu, V) 模型原始输出 logits
+    ref_full_logits: torch.Tensor,      # (B, seq_ref, V) ref 模型原始输出 logits
+    T_resp: int,                        # response 长度
+    response_mask: torch.Tensor,        # (B, T_resp)
+    temperature: float = 1.0,
+    kl_clip: float = 10.0,
+    chunk_size: int = 128,
 ) -> tuple[torch.Tensor, dict[str, float]]:
     """
-    计算 MRSD KL 损失。
+    内存友好的 full-distribution clipped KL loss。
 
-    返回：
-        loss:    标量 loss（有梯度）
-        metrics: 调试指标字典（均无梯度）
+    核心思路：不一次性切出 (B, T_resp, V) 的完整 logit 张量，
+    而是每次只取 chunk_size 个 token 位置做 softmax + KL，
+    峰值显存降低 T_resp/chunk_size 倍。
+
+    对于 B=2, chunk_size=128, V=150K：
+      每 chunk 峰值 ≈ 2×128×150K×4 bytes × 3 tensors ≈ 440MB（可接受）
     """
-    # ── 计算学生的 per-token log-probs ──────────────────────────────────────
-    # student_logits: (B, T, V) → log_softmax → (B, T, V)
-    # 取实际 token 位置的 log-prob
-    student_log_probs_full = F.log_softmax(student_logits.float(), dim=-1)  # (B, T, V)
-    # gather 实际 token 的 log-prob → (B, T)
-    student_token_log_probs = student_log_probs_full.gather(
-        dim=-1, index=response_ids.unsqueeze(-1)
-    ).squeeze(-1)                                                             # (B, T)
+    denom = response_mask.float().sum().clamp(min=1.0)
+    total_kl = torch.tensor(0.0, device=stu_full_logits.device)
 
-    # ── Per-token KL = log π_teacher(t) - log π_student(t) ────────────────
-    # teacher_log_probs 已经是 per-token 的 gathered log-probs，直接用
-    per_token_kl = teacher_log_probs.detach() - student_token_log_probs      # (B, T)
+    for t_start in range(0, T_resp, chunk_size):
+        t_end = min(t_start + chunk_size, T_resp)
+        chunk_mask = response_mask[:, t_start:t_end].float()
 
-    # ── Per-token clipping（防止 style token 主导）─────────────────────────
-    if kl_clip > 0:
-        per_token_kl_clipped = per_token_kl.clamp(max=kl_clip)
-    else:
-        per_token_kl_clipped = per_token_kl
+        if chunk_mask.sum() == 0:
+            continue
 
-    # ── 掩码 & 汇总 ──────────────────────────────────────────────────────────
-    masked_kl = per_token_kl_clipped * response_mask.float()                 # (B, T)
+        # logits[:, pos, :] 预测 token[pos+1]
+        # response tokens 占 input_ids 的最后 T_resp 个位置
+        # 预测 response[t] 的 logits 在 logits[:, -(T_resp - t) - 1, :]
+        # chunk [t_start, t_end) 对应:
+        #   start_idx = seq_len - T_resp - 1 + t_start  (即 -(T_resp + 1 - t_start))
+        #   end_idx   = seq_len - T_resp - 1 + t_end    (即 -(T_resp + 1 - t_end))
+        seq_stu = stu_full_logits.shape[1]
+        seq_ref = ref_full_logits.shape[1]
+        s_start = seq_stu - T_resp - 1 + t_start
+        s_end = seq_stu - T_resp - 1 + t_end
+        r_start = seq_ref - T_resp - 1 + t_start
+        r_end = seq_ref - T_resp - 1 + t_end
 
-    if loss_reduction == "mean" or loss_reduction == "token_mean":
-        denom = response_mask.float().sum().clamp(min=1.0)
-        loss = masked_kl.sum() / denom
-    elif loss_reduction == "sum":
-        loss = masked_kl.sum()
-    else:
-        raise ValueError(f"Unknown loss_reduction: {loss_reduction}")
+        stu_chunk = stu_full_logits[:, s_start:s_end, :]
+        ref_chunk = ref_full_logits[:, r_start:r_end, :]
 
-    # ── 诊断指标（detach）────────────────────────────────────────────────────
+        if temperature != 1.0:
+            stu_chunk = stu_chunk / temperature
+            ref_chunk = ref_chunk / temperature
+
+        # ref distribution (no_grad)
+        with torch.no_grad():
+            ref_lp = F.log_softmax(ref_chunk.float(), dim=-1)
+            ref_p = ref_lp.exp()
+
+        # student distribution (有梯度)
+        student_lp = F.log_softmax(stu_chunk.float(), dim=-1)
+
+        # per-vocab KL with clip
+        kl = ref_p * (ref_lp - student_lp)  # (B, chunk, V)
+        if kl_clip > 0:
+            kl = kl.clamp(max=kl_clip)
+
+        per_token_kl = kl.sum(dim=-1)  # (B, chunk)
+        total_kl = total_kl + (per_token_kl * chunk_mask).sum()
+
+        del ref_lp, ref_p, student_lp, kl, per_token_kl, stu_chunk, ref_chunk
+
+    loss = total_kl / denom
+
     with torch.no_grad():
-        n_tokens = response_mask.float().sum()
-        raw_kl_mean = (per_token_kl * response_mask.float()).sum() / n_tokens.clamp(1)
-        clip_frac = ((per_token_kl > kl_clip) * response_mask.float()).sum() / n_tokens.clamp(1)
-        student_entropy = -(
-            (student_log_probs_full.exp() * student_log_probs_full) * response_mask.float().unsqueeze(-1)
-        ).sum() / n_tokens.clamp(1)
-
-    metrics = {
-        "mrsd/kl_loss": loss.item(),
-        "mrsd/kl_raw_mean": raw_kl_mean.item(),
-        "mrsd/kl_clip_frac": clip_frac.item(),
-        "mrsd/student_entropy": student_entropy.item(),
-        "mrsd/n_response_tokens": n_tokens.item(),
-    }
+        metrics = {
+            "sd/kl_loss": loss.item(),
+            "sd/kl_per_token_mean": loss.item(),
+            "sd/n_tokens": denom.item(),
+        }
 
     return loss, metrics
 
 
-def gather_log_probs(
-    logits: torch.Tensor,  # (B, T, V)
-    token_ids: torch.Tensor,  # (B, T)
-) -> torch.Tensor:
-    """
-    从 logits 中取出 token_ids 对应位置的 log-prob。
-    返回 (B, T)。
-    """
-    log_probs = F.log_softmax(logits.float(), dim=-1)  # (B, T, V)
-    return log_probs.gather(dim=-1, index=token_ids.unsqueeze(-1)).squeeze(-1)
-
-
-def compute_per_token_kl(
-    teacher_logits: torch.Tensor,  # (B, T, V) no_grad
-    student_logits: torch.Tensor,  # (B, T, V) with_grad
-    token_ids: torch.Tensor,       # (B, T)
-    response_mask: torch.Tensor,   # (B, T)
-    kl_clip: float = 10.0,
-) -> tuple[torch.Tensor, torch.Tensor]:
-    """
-    同时从 logits 计算 teacher 和 student 的 per-token KL。
-
-    用于在同一 forward pass 中有效计算两侧 log-probs（避免重复 gather）。
-    返回：
-        per_token_kl:   (B, T) masked，有梯度（通过 student）
-        teacher_logp:   (B, T) detached teacher log-probs，供后续步骤存储
-    """
-    with torch.no_grad():
-        teacher_log_probs = gather_log_probs(teacher_logits, token_ids)   # (B, T)
-
-    student_log_probs = gather_log_probs(student_logits, token_ids)       # (B, T)
-
-    per_token_kl = teacher_log_probs.detach() - student_log_probs         # (B, T)
-    if kl_clip > 0:
-        per_token_kl = per_token_kl.clamp(max=kl_clip)
-    per_token_kl = per_token_kl * response_mask.float()
-
-    return per_token_kl, teacher_log_probs.detach()

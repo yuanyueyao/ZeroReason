@@ -1,6 +1,6 @@
-# Multi-Round Self-Refinement Distillation (MRSD)
+# RLSD: Bridging the Dead Zone of Verifiable Reinforcement Learning via On-Policy Self-Distillation
 
-## 研究方案：在 pass@64=0 场景下无 COT 注释的 On-Policy 自蒸馏
+## 研究方案：RLVR + 自蒸馏的统一框架——解决零梯度死区
 
 ---
 
@@ -8,98 +8,103 @@
 
 DeepSeek-R1-Zero 之后，RLVR（以 GRPO 为代表）已成为提升模型推理能力的主流方法。其核心机制是：对同一问题采样多条轨迹，根据 reward 差异计算 advantage，反向传播更新模型。
 
-**关键瓶颈**：当所有采样轨迹 reward 一致时，advantage 为零，梯度消失，模型无法更新。对于竞赛级数学题，模型在 pass@64 = 0 的题目上完全陷入这一死区——GRPO 在此场景下完全失效。
+**关键瓶颈**：当组内所有采样轨迹 reward 一致（全对或全错）时，advantage 为零，梯度消失，模型无法更新。对于难题，模型 pass@1=0，在这些题目上 GRPO 产生零梯度——训练完全失效。
 
 现有解法的局限：
 
-
 | 方法               | 局限                                                                        |
 | ---------------- | ------------------------------------------------------------------------- |
-| OPSD             | 只给 final answer 作为 privileged context，对 pass@64=0 的题，conditioned 生成质量未经验证 |
+| OPSD             | 只做蒸馏，不利用 reward 信号；对已有 reward 的题目浪费了 RL 信号                               |
 | ReGFT            | 需要人工注释的参考 COT，额外标注成本高                                                     |
 | Cog-DRIFT        | 改写题目格式，引入额外依赖，改变了原始任务分布                                                   |
 | SFT on human COT | 完全 off-policy，covariate shift，catastrophic forgetting 风险高                 |
 
+**本方法（RLSD）的核心思路**：
 
-**本方法的核心约束**：
+- 有 reward signal 的题（组内有对有错）→ 正常做 **RLVR**（GRPO），利用 reward 差异优化
+- 无 reward signal 的题（组内全错）→ 做 **On-Policy Self-Distillation**，用 frozen reference model 提供学习信号
+
+两者统一在同一训练循环中，**无额外外部依赖**：
 
 - ✅ 只使用 ground-truth final answer（无完整 COT）
-- ✅ 无外部更强 teacher 模型
+- ✅ 无外部更强 teacher 模型（reference = 训练前初始 checkpoint）
 - ✅ On-policy（训练数据来自当前模型自身采样）
-- ✅ 专门针对 pass@64=0 的死区问题
+- ✅ 对死区题提供非零梯度；对非死区题保持标准 RLVR 效果
 
 ---
 
-## 2. 核心方法：Multi-Round Self-Refinement Distillation（MRSD）
+## 2. 核心方法：RLSD（RL + Self-Distillation）
 
-### 2.1 直觉
+### 2.1 核心思路
 
-人类学生在做错一道题后，如果被告知正确答案，会对比自己的错误尝试，找到关键偏差，从而修正推理过程。MRSD 将这一直觉形式化为 on-policy self-distillation：
-
-- **Teacher**：同一模型，context 包含 `(问题 + 自己的错误尝试 + 正确答案)` → 生成修正后的推理轨迹
-- **Student**：同一模型，context 只有 `(问题)` → 在 inference 时的真实状态
-
-**与 OPSD 的关键差异**：OPSD 的 teacher context 只有 `(问题 + answer)`；MRSD 的 teacher context 额外包含了 `(自己的错误轨迹)`，使得 teacher 能做"对比修正"，生成的轨迹更贴近 student 的实际推理空间，而非单纯从答案逆向推理。
-
-### 2.2 训练流程
+训练数据为筛选出的 **死区题**（pass@1=0）。每步按 rollout 结果分流：
 
 ```
-对每道 pass@64=0 的题目，执行以下步骤：
+对死区题 x 采样 k 条轨迹后：
 
-Step 1 [Student Rollout]
-  从 π_student(· | 问题) 采样 k 条轨迹
-  → 全部错误（pass@64=0 的定义）
-  → 保留这些错误轨迹 {ŷ_1, ..., ŷ_k}
-
-Step 2 [Teacher Rollout]
-  对每条错误轨迹 ŷ_i，构造 teacher context：
-    context_i = [问题] + [My previous attempt: ŷ_i] + [The correct answer is: y*] + [Let me reconsider:]
-  从 π_teacher(· | context_i) 采样修正轨迹 ŷ'_i
-  → teacher 和 student 是同一个模型，只是 context 不同
-
-Step 3 [质量过滤]
-  对 ŷ'_i 进行验证（rule-based verifier 验证最终答案）
-  只保留最终答案正确的修正轨迹
-  → 若过滤后为空，该题跳过（不参与本轮训练）
-
-Step 4 [On-Policy Distillation]
-  对保留的 (ŷ_i, ŷ'_i) 对，计算 per-token KL loss：
-    L = -E_{ŷ ~ π_student} [ Σ_t log π_teacher(ŷ'_t | context_i, ŷ'_{<t}) ]
-  梯度只通过 student 的 logits 传播
-
-Step 5 [迭代]
-  更新模型参数后，重新对所有 pass@64=0 的题采样
-  动态追踪哪些题已从死区"毕业"（pass@64 > 0）
-  已毕业的题切换到标准 GRPO 训练
+┌─ 组内有答对 ──→ GRPO：reward 差异产生 advantage，正常 RL 更新
+│
+└─ 组内全错 ───→ Self-Distillation：frozen reference 在 on-policy 轨迹上算 KL，提供非零梯度
 ```
 
-### 2.3 Loss 形式
+随着训练推进，越来越多题从"全错"变为"有对有错"，自动从 SD 切换到 GRPO——无需手动调节。
 
-$$\mathcal{L}_{\text{MRSD}} = \mathbb{E}_{\hat{y} \sim \pi_\theta(\cdot|x)} \left[ D_{\text{KL}} \left( \pi_\theta(\cdot | x, \hat{y}, y^*) \;\|\; \pi_\theta(\cdot | x) \right) \right]$$
-
-其中：
-
-- $x$：问题
-- $\hat{y}$：student 采样的错误轨迹（on-policy）
-- $y^*$：ground-truth final answer
-- $\pi_\theta(\cdot | x, \hat{y}, y^*)$：teacher 分布（同一模型，不同 context）
-- 梯度仅通过右侧 $\pi_\theta(\cdot|x)$ 传播
-
-### 2.4 Teacher Context 模板
+### 2.2 Self-Distillation 分支详细流程
 
 ```
-[SYSTEM] You are a mathematical reasoning assistant.
+对组内全错的题目 x（ground truth 为 y*）：
 
-[USER]
-Problem: {问题}
+Step 1 [Student Rollout]（已在 RLVR 采样时完成）
+  π_S(·|x) 采样 k 条轨迹 ŷ_1...ŷ_k（均为错误答案）
 
-My previous attempt (which was incorrect):
-{错误轨迹 ŷ}
+Step 2 [Forward Pass — Teacher 拥有特权信息]
+  对每条轨迹 ŷ_i：
+  · Student context: (x, ŷ_{<n})          ← 仅有问题 + 已生成 token
+  · Teacher context: (x, y*, ŷ_{<n})      ← 问题 + GT答案 + 已生成 token（特权信息）
 
-I was told the correct answer is: {y*}
+  Teacher 拿到正确答案 y* 后，在每个 token 位置产生"知道答案时应该怎么续写"的分布
+  Student 只看到问题，需要学习这种分布
 
-Now let me carefully reconsider the problem and provide a correct step-by-step solution:
+Step 3 [Clipped Full-Distribution KL]
+  对每个 token 位置 n：
+    p_T(·) = p_ref(·|x, y*, ŷ_{<n})    ← no_grad，frozen θ_0
+    p_S(·) = p_θ(·|x, ŷ_{<n})          ← 有梯度，当前模型
+    D_clip(n) = Σ_{v∈V} min(p_T(v) · log(p_T(v)/p_S(v)), τ)
+  对序列取均值得到该轨迹的 loss
+
+Step 4 [梯度更新]
+  梯度仅通过 π_S 传播；π_T 始终 frozen
 ```
+
+**为什么 Teacher 需要特权信息**：Teacher（frozen ref）如果只看到和 student 相同的 context，它对死区题的分布同样差（因为它也答不对这些题）。给予 GT 答案后，teacher 在"知道答案"的条件下能产生更有信息量的 token 分布——即使它自身无法独立解出这道题。
+
+### 2.3 Loss
+
+每步 loss 取决于该题 rollout 的结果：
+
+**情况 A：组内有对有错 → GRPO Loss**
+
+$$\mathcal{L}_{\text{GRPO}} = -\mathbb{E}_{\hat{y}\sim\pi_\theta} \left[ A(\hat{y}) \cdot \log\pi_\theta(\hat{y}|x) \right]$$
+
+标准 GRPO advantage 计算（组内 reward 归一化）。
+
+**情况 B：组内全错 → Self-Distillation Loss**
+
+$$\mathcal{L}_{\text{SD}}(\theta) = \frac{1}{|\hat{y}|}\sum_{n=1}^{|\hat{y}|} D_{\text{clip}}^{\text{KL}}\Big(p_T^{(n)} \parallel p_S^{(n)}\Big)$$
+
+$$D_{\text{clip}}^{\text{KL}}(p_T \parallel p_S) = \sum_{v\in\mathcal{V}} \min\left( p_T(v)\log\frac{p_T(v)}{p_S(v)},\ \tau \right)$$
+
+- $p_T^{(n)} = p_{\theta_0}(\cdot|x, y^*, \hat{y}_{<n})$：frozen reference model 在 **特权 context**（含 GT）下的分布（`no_grad`）
+- $p_S^{(n)} = p_\theta(\cdot|x, \hat{y}_{<n})$：当前 student 在 **无特权 context** 下的分布（有梯度）
+- $\tau$：per-token KL clip 阈值（防止 style token 主导梯度）
+
+### 2.4 为什么 Self-Distillation 在死区仍有效
+
+GRPO 在死区上零梯度 = 完全放弃这些题。SD 提供了一个**非零但温和**的学习信号：
+
+1. **防止策略坍缩**：RL 在其它题上的梯度可能让模型在死区题上 diversity 下降（重复同一种错误模式），SD 将分布拉回 reference 的多样性
+2. **保持推理基础**：reference 的 token 分布隐含了通用推理偏好，SD 防止这些能力被 RL 侵蚀
+3. **隐式课程**：随着训练推进，多样性恢复 → 某些死区题偶然产生正确答案 → 自动切换到 GRPO → 用 RL 信号进一步强化
 
 ---
 
@@ -176,13 +181,12 @@ Now let me carefully reconsider the problem and provide a correct step-by-step s
 
 ### 5.1 Baseline 对比
 
-
 | Baseline             | 描述                                  |
 | -------------------- | ----------------------------------- |
-| **GRPO（原始）**         | 在 pass@64=0 题上直接跑，验证零梯度现象           |
-| **OPSD**             | 只给 answer，不给错误轨迹（对照实验）              |
-| **SFT on human COT** | 使用数据集中的人工 COT，完全 off-policy（性能上界参考） |
-| **MRSD（本方法）**        | 错误轨迹 + answer → teacher context     |
+| **GRPO（原始）**         | 标准 RLVR；在死区题上零梯度，验证问题存在             |
+| **GRPO + KL penalty**| GRPO 加 reference KL 约束，但死区题梯度仍为零     |
+| **Pure SD（OPSD）**    | 所有题都只做自蒸馏，不利用 reward signal           |
+| **RLSD（本方法）**        | 有 signal → GRPO；无 signal → SD       |
 
 
 ### 5.2 核心指标
@@ -208,11 +212,11 @@ Now let me carefully reconsider the problem and provide a correct step-by-step s
 
 | 消融                         | 目的                    |
 | -------------------------- | --------------------- |
-| 去掉错误轨迹（→ OPSD）             | 验证错误轨迹作为 context 的贡献  |
-| 不做质量过滤（Step 3）             | 验证过滤的必要性              |
-| 用 forward KL 替代 reverse KL | loss 形式的影响            |
-| 不同 teacher context 模板      | prompt 设计的敏感性         |
-| 不同 k（teacher 采样数量）         | teacher rollout 数量的影响 |
+| 去掉 KL clip（τ=∞）            | 验证 per-token clip 的必要性 |
+| 用 gathered KL 替代 full-distribution KL | 验证 full-distribution 的贡献 |
+| 不同 student rollout 数 k     | on-policy 数据量的影响      |
+| 不同 kl_clip τ 值             | clip 阈值的敏感性           |
+| OPSD 单独 vs OPSD + GRPO 联合 | 与 RL 信号的互补性           |
 
 
 ---
@@ -222,43 +226,44 @@ Now let me carefully reconsider the problem and provide a correct step-by-step s
 ### 6.1 模型配置
 
 ```python
-model = "Qwen/Qwen3-4B-Instruct"
-# Teacher 和 Student 共享同一份权重
-# Teacher forward pass 不计算梯度（torch.no_grad()）
-# Student forward pass 计算梯度
+student_model = "Qwen/Qwen2.5-3B-Instruct"   # 训练中不断更新
+teacher_model = "Qwen/Qwen2.5-3B-Instruct"   # frozen reference（初始权重，不更新）
+# Teacher forward pass：no_grad，返回 logits 用于计算 full-distribution KL
+# Student forward pass：有梯度，loss 通过 student logits 回传
 ```
 
 ### 6.2 训练超参数（初始建议）
 
 ```yaml
 learning_rate: 1e-5
-batch_size: 8  # 每道题
-student_rollout_per_problem: 4  # k=4 条错误轨迹
-teacher_rollout_per_error: 4    # 每条错误轨迹采样 4 条修正
-max_new_tokens_student: 2048
-max_new_tokens_teacher: 3072    # teacher 需要更长思考
-kl_type: reverse_kl             # 参考 GKD 建议
-kl_clip: true                   # 参考 OPSD 最新版，对 style token 做 point-wise 截断
-training_steps: 500             # 先跑 500 steps 看趋势
-eval_every: 50
+batch_size: 8                    # problems_per_step
+student_rollout_per_problem: 4   # 每道题采 4 条 on-policy 轨迹
+max_new_tokens: 8192             # student 生成上限
+kl_clip: 10.0                   # per-token KL clip τ
+training_steps: 500
+eval_every: 10
 ```
 
 ### 6.3 关键工程细节
 
-**per-token KL clipping**（参考 OPSD 最新 code release）：
+**Full-distribution clipped KL**：
 
-- style token（如 `wait`、`think`、`\n`）的 KL 值可能比数学 token 高 6-15 倍
-- 建议对 KL 值做 per-token clip，避免 style token 主导训练信号
+- 对词表全分布计算 KL（而非只在 gathered token 上）
+- per-token clip：`min(p_T(v) * log(p_T(v)/p_S(v)), τ)` 后对 vocab 求和
+- style token（如 `\n`、`wait`）的 KL 值可能比数学 token 高 6-15 倍，clip 防止它们主导梯度
 
-**Teacher context 长度控制**：
+**Teacher = frozen reference model + 特权信息**：
 
-- 错误轨迹可能很长，建议截断至最多 1024 tokens
-- 截断策略：保留前 512 tokens + 后 512 tokens（保留开头的方向性错误和结尾的答案错误）
+- Teacher 使用与 Student 不同的 prompt：在问题之后注入 ground truth 答案作为特权信息
+- Teacher prompt: `"Problem: {question}\n\nThe correct answer is: {GT}\n\nNow generate a solution:"`
+- Student prompt: `"Problem: {question}"`
+- 两者在相同的 response token 序列上做 forward，KL 在 response 位置逐 token 计算
+- reference model 在整个训练过程中权重不更新
 
 **动态课程**：
 
-- 每 100 steps 重新评估哪些题已从 pass@64=0 "毕业"
-- 毕业的题切换为标准 GRPO（利用 pass@k>0 的 reward 信号继续强化）
+- 每 100 steps 重新评估哪些题已从 pass@1=0 "毕业"
+- 毕业的题可切换为标准 GRPO（利用 pass@k>0 的 reward 信号继续强化）
 
 ---
 
@@ -266,29 +271,27 @@ eval_every: 50
 
 ### 核心 Novelty
 
-1. **首个系统研究 pass@64=0 死区中"知识盲区"vs"搜索死区"比例的工作**
-  - 诊断实验本身是 contribution
-2. **错误轨迹作为 teacher context 的 on-policy 自蒸馏**
-  - 不同于 OPSD（只给 answer）
-  - 不同于 ReGFT（需要人工 COT）
-  - 填补了"利用错误轨迹信息做自蒸馏"的空白
-3. **与 majority voting 训练的对比**
-  - 可以验证：MRSD 是否真正扩展了 pass@k ceiling，而不是 reranking
+1. **统一框架**：首个将 RLVR 和 on-policy self-distillation 按 reward signal 自动分流的方法
+   - 有 signal → RL；无 signal → SD；同一循环内无缝切换
+2. **零额外依赖**：不需要外部 teacher、不需要人工 COT、不需要改题目格式
+   - reference = 训练前初始 checkpoint，训练过程中 frozen
+3. **解决零梯度**：在 GRPO 完全失效的场景下仍有非零学习信号
+   - 且不干扰 GRPO 在有 signal 题上的正常效果
 
 ### 预期故事线
 
 ```
-GRPO 在 pass@64=0 场景下完全失效
+GRPO 在组内全错的题上产生零梯度，训练停滞
   ↓
-诊断：死区分为知识盲区和搜索死区
+观察：这些题占比可能 20-40%，严重拖累整体训练效率
   ↓
-MRSD 针对搜索死区：利用错误轨迹+answer 做 on-policy 自蒸馏
+RLSD：对这些题改用 frozen reference 的 on-policy self-distillation
   ↓
-训练后 coverage gain：X% 的死区题目变为可解
+训练后 coverage gain：原先 pass@1=0 的题有 X% 变为可解
   ↓
-pass@k 曲线证明是真实学习（ceiling 提升），而非 reranking
+pass@k 曲线证明是真实推理能力提升（ceiling 提升），而非 reranking
   ↓
-动态课程切换 GRPO 进一步强化已解锁的题目
+隐式课程：死区题逐渐产生 reward signal → 自动切换到 RLVR → 进一步强化
 ```
 
 ---

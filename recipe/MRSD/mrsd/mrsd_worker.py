@@ -1,62 +1,92 @@
 """
-MRSD 自定义 Worker。
+RLSD 自定义 Worker。
 
-继承 verl ActorRolloutRefWorker，覆写 init_model 中 Actor 的实例化，
-将 DataParallelPPOActor 替换为 MRSDPPOActor（使用 KL loss）。
-
-其余方法（generate_sequences、compute_log_prob、save_checkpoint、load_checkpoint）
-全部复用父类，保持与 verl 生态的兼容性。
+继承 verl ActorRolloutRefWorker：
+  1. init_model: 将 Actor 替换为 RLSDPPOActor
+  2. update_actor: 对 SD 分支，先用 ref_policy 计算 ref_logits，再调 actor.update_policy
 
 约束：仅修改 recipe/MRSD/ 目录。
 """
 
 from __future__ import annotations
 
+from verl import DataProto
 from verl.single_controller.base.decorator import Dispatch, register
 from verl.workers.fsdp_workers import ActorRolloutRefWorker
 
 
 class MRSDActorRolloutWorker(ActorRolloutRefWorker):
     """
-    MRSD Actor + Rollout Worker。
+    RLSD Actor + Rollout + Ref Worker。
 
-    与基类 ActorRolloutRefWorker 的唯一区别：
-      - init_model 中将 DataParallelPPOActor 替换为 MRSDPPOActor
-
-    注意：必须保留 @register 装饰器，否则 MAGIC_ATTR 丢失，
-    RayWorkerGroup 无法发现并绑定该方法。
+    区别于基类：
+      - init_model: 替换 Actor 为 RLSDPPOActor
+      - update_actor: SD 分支在本地计算 ref_logits（避免跨 worker 传输 V 维 logits）
     """
 
     @register(dispatch_mode=Dispatch.ONE_TO_ALL)
     def init_model(self):
-        """
-        调用父类 init_model，然后用 MRSDPPOActor 替换已创建的 self.actor。
-        父类已经：
-          1. 构建 FSDP 模型 self.actor_module_fsdp
-          2. 构建 optimizer、lr_scheduler
-          3. 构建 vllm rollout（如果 _is_rollout）
-          4. 创建 self.actor = DataParallelPPOActor(...)
-        我们只需在此基础上替换 self.actor。
-        """
         super().init_model()
 
-        # 只有 actor role 才需要替换
         if not self._is_actor:
             return
 
-        # 延迟 import 避免循环依赖
         import sys
         from pathlib import Path
         _recipe_root = Path(__file__).parent.parent.parent.parent
         if str(_recipe_root) not in sys.path:
             sys.path.insert(0, str(_recipe_root))
 
-        from recipe.MRSD.mrsd.mrsd_actor import MRSDPPOActor
+        from recipe.MRSD.mrsd.mrsd_actor import RLSDPPOActor
 
-        # 用 MRSDPPOActor 替换标准 DataParallelPPOActor
-        # 保持相同的 config、actor_module、optimizer 参数
-        self.actor = MRSDPPOActor(
+        self.actor = RLSDPPOActor(
             config=self.config.actor,
             actor_module=self.actor_module_fsdp,
             actor_optimizer=self.actor_optimizer,
         )
+
+    @register(dispatch_mode=Dispatch.DP_COMPUTE_PROTO)
+    def update_actor(self, data: DataProto):
+        """
+        覆写 update_actor：
+          - 对 SD 分支，将 ref_policy 传给 actor 供其逐 micro-batch 计算 ref_logits
+          - 对 GRPO 分支，直接走标准 update
+        """
+        import psutil
+        from codetiming import Timer
+        from verl.utils.device import get_torch_device
+
+        data = data.to("cpu")
+        assert self._is_actor
+
+        mode = data.meta_info.get("rlsd_mode", "sd")
+
+        # 将 ref_policy 引用传入 actor（SD 分支需要）
+        if mode == "sd" and self._is_ref:
+            self.actor._ref_module = self.ref_policy.actor_module
+        else:
+            self.actor._ref_module = None
+
+        with self.ulysses_sharding_manager:
+            data = self.ulysses_sharding_manager.preprocess_data(data=data)
+            with Timer(name="update_policy", logger=None) as timer:
+                metrics = self.actor.update_policy(data=data)
+            delta_time = timer.last
+            global_num_tokens = data.meta_info["global_token_num"]
+            estimated_flops, promised_flops = self.flops_counter.estimate_flops(global_num_tokens, delta_time)
+            metrics["perf/mfu/actor"] = estimated_flops * self.config.actor.ppo_epochs / promised_flops / self.world_size
+            metrics["perf/max_memory_allocated_gb"] = get_torch_device().max_memory_allocated() / (1024**3)
+            metrics["perf/max_memory_reserved_gb"] = get_torch_device().max_memory_reserved() / (1024**3)
+            metrics["perf/cpu_memory_used_gb"] = psutil.virtual_memory().used / (1024**3)
+
+            lr = self.actor_lr_scheduler.get_last_lr()[0]
+            metrics["actor/lr"] = lr
+            self.actor_lr_scheduler.step()
+
+            output = DataProto(meta_info={"metrics": metrics})
+            output = self.ulysses_sharding_manager.postprocess_data(data=output)
+            output = output.to("cpu")
+
+        # 清理引用
+        self.actor._ref_module = None
+        return output
