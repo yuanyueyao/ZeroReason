@@ -103,7 +103,7 @@ class RLSDPPOActor(DataParallelPPOActor):
             stu_full_logits = output.logits  # (B, seq_stu, V) view
 
             # 分块计算 full-distribution clipped KL（内存友好）
-            from recipe.RLSD.mrsd.loss import compute_sd_loss_chunked
+            from recipe.RLSD.rlsd.loss import compute_sd_loss_chunked
             loss, step_metrics = compute_sd_loss_chunked(
                 stu_full_logits=stu_full_logits,
                 ref_full_logits=ref_full_logits,

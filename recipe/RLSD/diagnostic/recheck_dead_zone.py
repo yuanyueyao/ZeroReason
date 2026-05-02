@@ -9,12 +9,12 @@ import json
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent.parent))
-from recipe.RLSD.mrsd.verifier import is_correct
+from recipe.RLSD.rlsd.verifier import is_correct
 
 
 def main():
-    input_path = "/data3/yyy/verl/data/mrsd/dead_zone_phase_a.jsonl"
-    output_path = "/data3/yyy/verl/data/mrsd/dead_zone_verified.jsonl"
+    input_path = "/data3/yyy/verl/data/rlsd/dead_zone_phase_a.jsonl"
+    output_path = "/data3/yyy/verl/data/rlsd/dead_zone_verified.jsonl"
 
     print(f"[recheck] 读取: {input_path}")
     with open(input_path) as f:
@@ -48,7 +48,7 @@ def main():
 
     print(f"\n[recheck] 翻转的题目示例 (前 10 条):")
     for rec in flipped[:10]:
-        from recipe.RLSD.mrsd.verifier import extract_boxed_answer
+        from recipe.RLSD.rlsd.verifier import extract_boxed_answer
         traj = rec.get("first_wrong_traj", "")
         extracted = extract_boxed_answer(traj) or "(none)"
         print(f"  idx={rec['index']}  gt={rec['ground_truth']!r}  pred={extracted!r}")

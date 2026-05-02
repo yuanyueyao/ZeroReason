@@ -6,9 +6,9 @@ Step 2/3 诊断实验：对 pass@K=0 的死区题目，测试 Context A vs Conte
 
 用法：
     conda run -n verl python recipe/RLSD/diagnostic/run_context_ab_test.py \
-        --dead_zone /data3/yyy/verl/data/mrsd/dead_zone_problems.jsonl \
+        --dead_zone /data3/yyy/verl/data/rlsd/dead_zone_problems.jsonl \
         --model /data3/yyy/models/Qwen3-4B-Instruct-2507 \
-        --output_dir /data3/yyy/verl/data/mrsd/diagnostic \
+        --output_dir /data3/yyy/verl/data/rlsd/diagnostic \
         --n_problems 50 \
         --n_samples_per_context 16
 """
@@ -33,7 +33,7 @@ def parse_args():
     p = argparse.ArgumentParser()
     p.add_argument(
         "--dead_zone",
-        default="/data3/yyy/verl/data/mrsd/dead_zone_problems.jsonl",
+        default="/data3/yyy/verl/data/rlsd/dead_zone_problems.jsonl",
         help="run_pass_at_k.py 输出的死区题目 jsonl",
     )
     p.add_argument(
@@ -42,7 +42,7 @@ def parse_args():
     )
     p.add_argument(
         "--output_dir",
-        default="/data3/yyy/verl/data/mrsd/diagnostic",
+        default="/data3/yyy/verl/data/rlsd/diagnostic",
     )
     p.add_argument("--n_problems", type=int, default=50, help="随机抽取多少道死区题目")
     p.add_argument("--n_samples_per_context", type=int, default=16, help="每种 context 采样次数")
@@ -59,8 +59,8 @@ def main():
     args = parse_args()
     random.seed(args.seed)
 
-    from recipe.RLSD.mrsd.verifier import is_correct
-    from recipe.RLSD.mrsd.prompt import (
+    from recipe.RLSD.rlsd.verifier import is_correct
+    from recipe.RLSD.rlsd.prompt import (
         build_teacher_context_a,
         build_teacher_context_b,
     )

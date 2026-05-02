@@ -1,6 +1,6 @@
 #!/bin/bash
 # RLSD 训练启动脚本（8×A800）
-# 用法：bash recipe/RLSD/run_mrsd.sh [额外 hydra overrides]
+# 用法：bash recipe/RLSD/run_rlsd.sh [额外 hydra overrides]
 
 set -euo pipefail
 
@@ -18,10 +18,10 @@ CONDA_ENV=verl
 
 # ── 默认参数 ────────────────────────────────────────────────────────────────
 MODEL_PATH=/data3/yyy/models/Qwen2.5-3B-Instruct
-DATA_DIR=/data3/yyy/verl/data/mrsd
+DATA_DIR=/data3/yyy/verl/data/rlsd
 CKPT_DIR=/data3/yyy/verl/checkpoints/rlsd
 
-MRSD_PROBLEMS_PATH="/data3/yyy/verl/data/mrsd/pass_at_k_pass1_resp8192_20260501_095948_dead_zone.jsonl"
+MRSD_PROBLEMS_PATH="/data3/yyy/verl/data/rlsd/pass_at_k_pass1_resp8192_20260501_095948_dead_zone.jsonl"
 
 # 问题文件选择逻辑
 if [ -n "${MRSD_PROBLEMS_PATH:-}" ]; then
@@ -64,7 +64,7 @@ echo "========================================================"
 cd "${VERL_ROOT}"
 
 conda run -n ${CONDA_ENV} --no-capture-output \
-    python recipe/RLSD/main_mrsd.py \
+    python recipe/RLSD/main_rlsd.py \
         actor_rollout_ref.model.path="${MODEL_PATH}" \
         actor_rollout_ref.actor.clip_ratio_high=0.28 \
         actor_rollout_ref.actor.clip_ratio_low=0.2 \

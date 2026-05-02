@@ -2,8 +2,8 @@
 RLSD 训练主入口。
 
 用法：
-    bash recipe/RLSD/run_mrsd.sh
-    python recipe/RLSD/main_mrsd.py [hydra overrides]
+    bash recipe/RLSD/run_rlsd.sh
+    python recipe/RLSD/main_rlsd.py [hydra overrides]
 """
 
 import os
@@ -21,12 +21,12 @@ import ray
 from omegaconf import OmegaConf
 
 
-@hydra.main(config_path="config", config_name="mrsd_trainer", version_base=None)
+@hydra.main(config_path="config", config_name="rlsd_trainer", version_base=None)
 def main(config):
-    run_mrsd(config)
+    run_rlsd(config)
 
 
-def run_mrsd(config) -> None:
+def run_rlsd(config) -> None:
     if not ray.is_initialized():
         ray.init(
             runtime_env={"env_vars": {
@@ -66,9 +66,9 @@ class TaskRunner:
         import sys
         from pathlib import Path
         sys.path.insert(0, str(Path(__file__).parent.parent.parent))
-        from recipe.RLSD.mrsd.mrsd_worker import MRSDActorRolloutWorker
-        from recipe.RLSD.mrsd.mrsd_trainer import MRSDTrainer
-        from recipe.RLSD.mrsd.dataset import MRSDDataset
+        from recipe.RLSD.rlsd.rlsd_worker import MRSDActorRolloutWorker
+        from recipe.RLSD.rlsd.rlsd_trainer import MRSDTrainer
+        from recipe.RLSD.rlsd.dataset import MRSDDataset
 
         actor_rollout_cls = MRSDActorRolloutWorker
         ray_worker_group_cls = RayWorkerGroup

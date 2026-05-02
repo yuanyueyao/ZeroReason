@@ -14,7 +14,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent.parent))
 
-from recipe.RLSD.mrsd.prompt import (
+from recipe.RLSD.rlsd.prompt import (
     SYSTEM_STUDENT,
     SYSTEM_TEACHER,
     MAX_WRONG_TRAJ_CHARS,

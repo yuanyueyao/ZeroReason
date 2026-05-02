@@ -17,8 +17,8 @@
 set -e
 
 MODEL="${MODEL:-/data3/yyy/models/Qwen3-4B-Instruct-2507}"
-DATA="${DATA:-/data3/yyy/verl/data/mrsd/train_level45.parquet}"
-OUT_DIR="${OUT_DIR:-/data3/yyy/verl/data/mrsd}"
+DATA="${DATA:-/data3/yyy/verl/data/rlsd/train_level45.parquet}"
+OUT_DIR="${OUT_DIR:-/data3/yyy/verl/data/rlsd}"
 N_SAMPLES="${N_SAMPLES:-64}"
 N_PROBLEMS="${N_PROBLEMS:-50}"
 N_CTX_SAMPLES="${N_CTX_SAMPLES:-16}"

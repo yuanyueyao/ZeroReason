@@ -5,8 +5,8 @@
 
 用法：
     conda run -n verl python recipe/RLSD/diagnostic/filter_pass_at_1_zero.py \\
-        --input /data3/yyy/verl/data/mrsd/pass_at_k_results.jsonl \\
-        --output /data3/yyy/verl/data/mrsd/pass_at_1_zero.jsonl
+        --input /data3/yyy/verl/data/rlsd/pass_at_k_results.jsonl \\
+        --output /data3/yyy/verl/data/rlsd/pass_at_1_zero.jsonl
 """
 
 from __future__ import annotations
@@ -21,13 +21,13 @@ def parse_args() -> argparse.Namespace:
     p.add_argument(
         "--input",
         type=Path,
-        default=Path("/data3/yyy/verl/data/mrsd/pass_at_k_results.jsonl"),
+        default=Path("/data3/yyy/verl/data/rlsd/pass_at_k_results.jsonl"),
         help="含 pass_at_1 字段的 jsonl",
     )
     p.add_argument(
         "--output",
         type=Path,
-        default=Path("/data3/yyy/verl/data/mrsd/pass_at_1_zero.jsonl"),
+        default=Path("/data3/yyy/verl/data/rlsd/pass_at_1_zero.jsonl"),
         help="输出 jsonl（仅保留 pass_at_1=0）",
     )
     return p.parse_args()

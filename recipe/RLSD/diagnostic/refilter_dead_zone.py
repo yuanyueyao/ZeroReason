@@ -9,9 +9,9 @@
 
 用法：
     conda run -n verl python recipe/RLSD/diagnostic/refilter_dead_zone.py \
-        --input /data3/yyy/verl/data/mrsd/dead_zone_problems.jsonl \
+        --input /data3/yyy/verl/data/rlsd/dead_zone_problems.jsonl \
         --model /data3/yyy/models/Qwen3-4B-Instruct-2507 \
-        --output /data3/yyy/verl/data/mrsd/dead_zone_refiltered.jsonl \
+        --output /data3/yyy/verl/data/rlsd/dead_zone_refiltered.jsonl \
         --n_gpus 8
 """
 
@@ -28,9 +28,9 @@ os.environ.setdefault("TORCH_COMPILE_DISABLE", "1")
 
 def parse_args():
     p = argparse.ArgumentParser()
-    p.add_argument("--input", default="/data3/yyy/verl/data/mrsd/dead_zone_problems.jsonl")
+    p.add_argument("--input", default="/data3/yyy/verl/data/rlsd/dead_zone_problems.jsonl")
     p.add_argument("--model", default="/data3/yyy/models/Qwen3-4B-Instruct-2507")
-    p.add_argument("--output", default="/data3/yyy/verl/data/mrsd/dead_zone_refiltered.jsonl")
+    p.add_argument("--output", default="/data3/yyy/verl/data/rlsd/dead_zone_refiltered.jsonl")
     p.add_argument("--n_samples", type=int, default=64)
     p.add_argument("--n_gpus", type=int, default=8)
     p.add_argument("--batch_size", type=int, default=128)
@@ -84,7 +84,7 @@ def main():
     # ── 验证器 ──
     import sys
     sys.path.insert(0, str(Path(__file__).parent.parent.parent.parent))
-    from recipe.RLSD.mrsd.verifier import is_correct, compute_pass_at_k
+    from recipe.RLSD.rlsd.verifier import is_correct, compute_pass_at_k
 
     # ── 构建所有 prompt ──
     all_prompts = [build_prompt(tokenizer, p["question"]) for p in problems]

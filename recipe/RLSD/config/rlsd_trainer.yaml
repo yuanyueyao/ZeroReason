@@ -9,9 +9,9 @@ data:
 
   use_shm: False
 
-  train_files: /data3/yyy/verl/data/mrsd/train_level45.parquet
+  train_files: /data3/yyy/verl/data/rlsd/train_level45.parquet
 
-  val_files: /data3/yyy/verl/data/mrsd/test.parquet
+  val_files: /data3/yyy/verl/data/rlsd/test.parquet
 
   prompt_key: prompt
 
@@ -56,7 +56,7 @@ data:
     name: null
 
   # ── MRSD 专用：死区问题文件（math_verify 重新验证后的真死区）──
-  mrsd_problems_path: /data3/yyy/verl/data/mrsd/pass_at_k_pass1_resp8192_20260501_095948_dead_zone.jsonl
+  mrsd_problems_path: /data3/yyy/verl/data/rlsd/pass_at_k_pass1_resp8192_20260501_095948_dead_zone.jsonl
 
 # config for actor, rollout and reference model
 actor_rollout_ref:

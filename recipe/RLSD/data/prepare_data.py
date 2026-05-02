@@ -13,13 +13,13 @@
     conda run -n verl python recipe/RLSD/data/prepare_data.py \
         --source deepmath \
         --input /data3/yyy/verl/data/deepmath/train_level7to9.parquet \
-        --output_dir /data3/yyy/verl/data/mrsd
+        --output_dir /data3/yyy/verl/data/rlsd
 
     # MATH Level 5（本地开发用）
     conda run -n verl python recipe/RLSD/data/prepare_data.py \
         --source math \
         --input /data3/yyy/Self-RePrompt/data/raw/hendrycks_math.json \
-        --output_dir /data3/yyy/verl/data/mrsd \
+        --output_dir /data3/yyy/verl/data/rlsd \
         --level 5
 """
 
@@ -177,7 +177,7 @@ def main():
     parser.add_argument("--input", required=True, help="输入文件路径")
     parser.add_argument(
         "--output_dir",
-        default="/data3/yyy/verl/data/mrsd",
+        default="/data3/yyy/verl/data/rlsd",
         help="输出目录",
     )
     parser.add_argument(

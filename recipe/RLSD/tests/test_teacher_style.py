@@ -23,14 +23,14 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent.parent))
 
-from recipe.RLSD.mrsd.prompt import (
+from recipe.RLSD.rlsd.prompt import (
     build_student_messages,
     build_teacher_context_a,
     build_teacher_context_b,
 )
 
 MODEL_PATH = "/data3/yyy/models/Qwen3-4B-Instruct-2507"
-DATA_PATH = "/data3/yyy/verl/data/mrsd/pass_at_k_pass1_resp8192_20260501_095948_dead_zone.jsonl"
+DATA_PATH = "/data3/yyy/verl/data/rlsd/pass_at_k_pass1_resp8192_20260501_095948_dead_zone.jsonl"
 
 SEP = "=" * 72
 SUBSEP = "─" * 72

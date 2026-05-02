@@ -1,8 +1,0 @@
-{
-  "source": "math",
-  "total": 1239,
-  "train": 1178,
-  "test": 61,
-  "train_path": "/data3/yyy/verl/data/mrsd/level4/train.parquet",
-  "test_path": "/data3/yyy/verl/data/mrsd/level4/test.parquet"
-}

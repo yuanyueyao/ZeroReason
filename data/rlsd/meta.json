@@ -1,0 +1,8 @@
+{
+  "source": "math",
+  "total": 1691,
+  "train": 1522,
+  "test": 169,
+  "train_path": "/data3/yyy/verl/data/rlsd/train.parquet",
+  "test_path": "/data3/yyy/verl/data/rlsd/test.parquet"
+}

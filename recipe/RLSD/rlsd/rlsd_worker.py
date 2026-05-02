@@ -37,7 +37,7 @@ class MRSDActorRolloutWorker(ActorRolloutRefWorker):
         if str(_recipe_root) not in sys.path:
             sys.path.insert(0, str(_recipe_root))
 
-        from recipe.RLSD.mrsd.mrsd_actor import RLSDPPOActor
+        from recipe.RLSD.rlsd.rlsd_actor import RLSDPPOActor
 
         self.actor = RLSDPPOActor(
             config=self.config.actor,
