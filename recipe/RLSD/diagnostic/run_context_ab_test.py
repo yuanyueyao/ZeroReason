@@ -5,7 +5,7 @@ Step 2/3 诊断实验：对 pass@K=0 的死区题目，测试 Context A vs Conte
 输出：context_ab_results.jsonl + 分类报告
 
 用法：
-    conda run -n verl python recipe/MRSD/diagnostic/run_context_ab_test.py \
+    conda run -n verl python recipe/RLSD/diagnostic/run_context_ab_test.py \
         --dead_zone /data3/yyy/verl/data/mrsd/dead_zone_problems.jsonl \
         --model /data3/yyy/models/Qwen3-4B-Instruct-2507 \
         --output_dir /data3/yyy/verl/data/mrsd/diagnostic \
@@ -59,8 +59,8 @@ def main():
     args = parse_args()
     random.seed(args.seed)
 
-    from recipe.MRSD.mrsd.verifier import is_correct
-    from recipe.MRSD.mrsd.prompt import (
+    from recipe.RLSD.mrsd.verifier import is_correct
+    from recipe.RLSD.mrsd.prompt import (
         build_teacher_context_a,
         build_teacher_context_b,
     )

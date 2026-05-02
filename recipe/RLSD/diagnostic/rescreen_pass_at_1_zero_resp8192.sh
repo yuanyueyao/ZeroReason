@@ -2,7 +2,7 @@
 # pass@1 + 筛 pass_at_1=0；单次生成上限 8192 tokens（与 data.max_response_length=8192 对齐）。
 #
 # 用法：
-#   bash recipe/MRSD/diagnostic/rescreen_pass_at_1_zero_resp8192.sh
+#   bash recipe/RLSD/diagnostic/rescreen_pass_at_1_zero_resp8192.sh
 #
 # 可选环境变量：
 #   MODEL_PATH  DATA_PARQUET  OUT_DIR  N_GPUS  BATCH_SIZE  MAX_PROBLEMS
@@ -50,7 +50,7 @@ else
 fi
 echo "=========================================="
 
-conda run -n verl --no-capture-output python recipe/MRSD/diagnostic/run_pass_at_k.py \
+conda run -n verl --no-capture-output python recipe/RLSD/diagnostic/run_pass_at_k.py \
   --data "${DATA_PARQUET}" \
   --model "${MODEL_PATH}" \
   --output "${PASS_JSONL}" \
@@ -60,7 +60,7 @@ conda run -n verl --no-capture-output python recipe/MRSD/diagnostic/run_pass_at_
   "${TOKEN_ARGS[@]}" \
   "${EXTRA[@]}"
 
-conda run -n verl --no-capture-output python recipe/MRSD/diagnostic/filter_pass_at_1_zero.py \
+conda run -n verl --no-capture-output python recipe/RLSD/diagnostic/filter_pass_at_1_zero.py \
   --input "${PASS_JSONL}" \
   --output "${ZERO_JSONL}"
 

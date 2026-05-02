@@ -2,8 +2,8 @@
 RLSD 训练主入口。
 
 用法：
-    bash recipe/MRSD/run_mrsd.sh
-    python recipe/MRSD/main_mrsd.py [hydra overrides]
+    bash recipe/RLSD/run_mrsd.sh
+    python recipe/RLSD/main_mrsd.py [hydra overrides]
 """
 
 import os
@@ -66,9 +66,9 @@ class TaskRunner:
         import sys
         from pathlib import Path
         sys.path.insert(0, str(Path(__file__).parent.parent.parent))
-        from recipe.MRSD.mrsd.mrsd_worker import MRSDActorRolloutWorker
-        from recipe.MRSD.mrsd.mrsd_trainer import MRSDTrainer
-        from recipe.MRSD.mrsd.dataset import MRSDDataset
+        from recipe.RLSD.mrsd.mrsd_worker import MRSDActorRolloutWorker
+        from recipe.RLSD.mrsd.mrsd_trainer import MRSDTrainer
+        from recipe.RLSD.mrsd.dataset import MRSDDataset
 
         actor_rollout_cls = MRSDActorRolloutWorker
         ray_worker_group_cls = RayWorkerGroup

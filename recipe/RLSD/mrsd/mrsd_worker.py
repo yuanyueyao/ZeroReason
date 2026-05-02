@@ -5,7 +5,7 @@ RLSD 自定义 Worker。
   1. init_model: 将 Actor 替换为 RLSDPPOActor
   2. update_actor: 对 SD 分支，先用 ref_policy 计算 ref_logits，再调 actor.update_policy
 
-约束：仅修改 recipe/MRSD/ 目录。
+约束：仅修改 recipe/RLSD/ 目录。
 """
 
 from __future__ import annotations
@@ -37,7 +37,7 @@ class MRSDActorRolloutWorker(ActorRolloutRefWorker):
         if str(_recipe_root) not in sys.path:
             sys.path.insert(0, str(_recipe_root))
 
-        from recipe.MRSD.mrsd.mrsd_actor import RLSDPPOActor
+        from recipe.RLSD.mrsd.mrsd_actor import RLSDPPOActor
 
         self.actor = RLSDPPOActor(
             config=self.config.actor,

@@ -4,7 +4,7 @@
 典型输入：run_pass_at_k.py 生成的 pass_at_k_results.jsonl（含 pass_at_1 字段）。
 
 用法：
-    conda run -n verl python recipe/MRSD/diagnostic/filter_pass_at_1_zero.py \\
+    conda run -n verl python recipe/RLSD/diagnostic/filter_pass_at_1_zero.py \\
         --input /data3/yyy/verl/data/mrsd/pass_at_k_results.jsonl \\
         --output /data3/yyy/verl/data/mrsd/pass_at_1_zero.jsonl
 """

@@ -6,7 +6,7 @@
 如果风格差异大，OPSD 蒸馏效果会打折扣。
 
 用法：
-  python recipe/MRSD/tests/test_teacher_style.py [--n_questions 3] [--max_tokens 8192]
+  python recipe/RLSD/tests/test_teacher_style.py [--n_questions 3] [--max_tokens 8192]
 
 输出保存到：logs/mrsd/test_teacher_style_<timestamp>.txt
 """
@@ -23,7 +23,7 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent.parent))
 
-from recipe.MRSD.mrsd.prompt import (
+from recipe.RLSD.mrsd.prompt import (
     build_student_messages,
     build_teacher_context_a,
     build_teacher_context_b,

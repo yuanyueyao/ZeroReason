@@ -1,6 +1,6 @@
 #!/bin/bash
 # RLSD 训练启动脚本（8×A800）
-# 用法：bash recipe/MRSD/run_mrsd.sh [额外 hydra overrides]
+# 用法：bash recipe/RLSD/run_mrsd.sh [额外 hydra overrides]
 
 set -euo pipefail
 
@@ -64,7 +64,7 @@ echo "========================================================"
 cd "${VERL_ROOT}"
 
 conda run -n ${CONDA_ENV} --no-capture-output \
-    python recipe/MRSD/main_mrsd.py \
+    python recipe/RLSD/main_mrsd.py \
         actor_rollout_ref.model.path="${MODEL_PATH}" \
         actor_rollout_ref.actor.clip_ratio_high=0.28 \
         actor_rollout_ref.actor.clip_ratio_low=0.2 \

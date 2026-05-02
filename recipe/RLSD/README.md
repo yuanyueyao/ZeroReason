@@ -329,7 +329,7 @@ pass@k 曲线证明是真实推理能力提升（ceiling 提升），而非 rera
 ## 10. 环境设置
 采用 conda 环境：verl。
 
-只可以修改recipe/MRSD目录下的文件，其他目录下的文件不要修改。
+只可以修改recipe/RLSD目录下的文件，其他目录下的文件不要修改。
 
 模型在/data3/yyy/models/Qwen3-4B-Base目录下。
 数据在/data3/yyy/verl/data目录下。

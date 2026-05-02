@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # 从零重新跑 pass@1（不读旧 jsonl），再筛出 pass_at_1=0。
 # 用法：
-#   bash recipe/MRSD/diagnostic/rescreen_pass_at_1_zero.sh
+#   bash recipe/RLSD/diagnostic/rescreen_pass_at_1_zero.sh
 # 可选环境变量：
 #   MODEL_PATH  DATA_PARQUET  N_GPUS  BATCH_SIZE  MAX_PROBLEMS  OUT_DIR
 
@@ -36,7 +36,7 @@ echo "  pass@1 结果: ${PASS_JSONL}"
 echo "  pass@1=0 子集: ${ZERO_JSONL}"
 echo "=========================================="
 
-conda run -n verl --no-capture-output python recipe/MRSD/diagnostic/run_pass_at_k.py \
+conda run -n verl --no-capture-output python recipe/RLSD/diagnostic/run_pass_at_k.py \
   --data "${DATA_PARQUET}" \
   --model "${MODEL_PATH}" \
   --output "${PASS_JSONL}" \
@@ -45,7 +45,7 @@ conda run -n verl --no-capture-output python recipe/MRSD/diagnostic/run_pass_at_
   --batch_size "${BATCH_SIZE}" \
   "${EXTRA[@]}"
 
-conda run -n verl --no-capture-output python recipe/MRSD/diagnostic/filter_pass_at_1_zero.py \
+conda run -n verl --no-capture-output python recipe/RLSD/diagnostic/filter_pass_at_1_zero.py \
   --input "${PASS_JSONL}" \
   --output "${ZERO_JSONL}"
 

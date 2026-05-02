@@ -2,7 +2,7 @@
 下载 DeepMath-103K 数据集到本地。
 
 用法：
-    conda run -n verl python recipe/MRSD/data/download_deepmath.py \
+    conda run -n verl python recipe/RLSD/data/download_deepmath.py \
         --output_dir /data3/yyy/verl/data/deepmath
 
 网络要求：需要能访问 HuggingFace（hf-mirror.com 或 huggingface.co）。

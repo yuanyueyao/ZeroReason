@@ -8,7 +8,7 @@
   Phase B: 对 Phase A 失败的补 63 次，确认 pass@64=0
 
 用法：
-    conda run -n verl python recipe/MRSD/diagnostic/refilter_dead_zone.py \
+    conda run -n verl python recipe/RLSD/diagnostic/refilter_dead_zone.py \
         --input /data3/yyy/verl/data/mrsd/dead_zone_problems.jsonl \
         --model /data3/yyy/models/Qwen3-4B-Instruct-2507 \
         --output /data3/yyy/verl/data/mrsd/dead_zone_refiltered.jsonl \
@@ -84,7 +84,7 @@ def main():
     # ── 验证器 ──
     import sys
     sys.path.insert(0, str(Path(__file__).parent.parent.parent.parent))
-    from recipe.MRSD.mrsd.verifier import is_correct, compute_pass_at_k
+    from recipe.RLSD.mrsd.verifier import is_correct, compute_pass_at_k
 
     # ── 构建所有 prompt ──
     all_prompts = [build_prompt(tokenizer, p["question"]) for p in problems]

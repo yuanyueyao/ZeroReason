@@ -26,9 +26,9 @@ from verl.utils.tracking import Tracking
 
 import sys
 sys.path.insert(0, str(Path(__file__).parent.parent.parent.parent))
-from recipe.MRSD.mrsd.dataset import MRSDDataset, MRSDProblem
-from recipe.MRSD.mrsd.prompt import build_student_messages, build_teacher_privileged_messages
-from recipe.MRSD.mrsd.verifier import is_correct
+from recipe.RLSD.mrsd.dataset import MRSDDataset, MRSDProblem
+from recipe.RLSD.mrsd.prompt import build_student_messages, build_teacher_privileged_messages
+from recipe.RLSD.mrsd.verifier import is_correct
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -512,7 +512,7 @@ class MRSDTrainer(RayPPOTrainer):
             if correct:
                 n_correct += 1
             if i < n_examine:
-                from recipe.MRSD.mrsd.verifier import extract_boxed_answer
+                from recipe.RLSD.mrsd.verifier import extract_boxed_answer
                 extracted = extract_boxed_answer(r) or "(none)"
                 status = "+" if correct else "-"
                 print(f"  [{status}] Q{i} gt={gt}  pred={extracted}")

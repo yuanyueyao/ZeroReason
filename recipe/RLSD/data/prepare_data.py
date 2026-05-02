@@ -10,13 +10,13 @@
 
 用法示例：
     # DeepMath（需先运行 download_deepmath.py）
-    conda run -n verl python recipe/MRSD/data/prepare_data.py \
+    conda run -n verl python recipe/RLSD/data/prepare_data.py \
         --source deepmath \
         --input /data3/yyy/verl/data/deepmath/train_level7to9.parquet \
         --output_dir /data3/yyy/verl/data/mrsd
 
     # MATH Level 5（本地开发用）
-    conda run -n verl python recipe/MRSD/data/prepare_data.py \
+    conda run -n verl python recipe/RLSD/data/prepare_data.py \
         --source math \
         --input /data3/yyy/Self-RePrompt/data/raw/hendrycks_math.json \
         --output_dir /data3/yyy/verl/data/mrsd \

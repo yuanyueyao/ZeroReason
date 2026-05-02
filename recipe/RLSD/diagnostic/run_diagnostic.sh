@@ -3,7 +3,7 @@
 # MRSD §3 诊断实验 一键运行脚本
 #
 # 用法：
-#   bash recipe/MRSD/diagnostic/run_diagnostic.sh
+#   bash recipe/RLSD/diagnostic/run_diagnostic.sh
 #
 # 可选环境变量：
 #   N_SAMPLES=64       每道题采样次数（pass@k 阶段）
@@ -40,7 +40,7 @@ echo ""
 
 # ── Step 1: pass@k 采样 ──
 echo "[Step 1/3] pass@${N_SAMPLES} 采样..."
-$CONDA_RUN python recipe/MRSD/diagnostic/run_pass_at_k.py \
+$CONDA_RUN python recipe/RLSD/diagnostic/run_pass_at_k.py \
     --data "$DATA" \
     --model "$MODEL" \
     --output "$OUT_DIR/pass_at_k_results.jsonl" \
@@ -54,7 +54,7 @@ echo ""
 
 # ── Step 2: Context A/B 测试 ──
 echo "[Step 2/3] Context A/B 对比测试..."
-$CONDA_RUN python recipe/MRSD/diagnostic/run_context_ab_test.py \
+$CONDA_RUN python recipe/RLSD/diagnostic/run_context_ab_test.py \
     --dead_zone "$OUT_DIR/dead_zone_problems.jsonl" \
     --model "$MODEL" \
     --output_dir "$OUT_DIR/diagnostic" \
@@ -68,7 +68,7 @@ echo ""
 
 # ── Step 3: 分类报告 ──
 echo "[Step 3/3] 生成分类报告..."
-$CONDA_RUN python recipe/MRSD/diagnostic/classify_problems.py \
+$CONDA_RUN python recipe/RLSD/diagnostic/classify_problems.py \
     --pass_at_k "$OUT_DIR/pass_at_k_results.jsonl" \
     --context_ab "$OUT_DIR/diagnostic/context_ab_results.jsonl" \
     --output_dir "$OUT_DIR/diagnostic"
