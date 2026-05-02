@@ -682,3 +682,7 @@ mrsd:
 
   # 评估时最多用多少道验证题
   val_max_samples: 64
+
+  # GRPO-Only 对比模式：true = 跳过 SD 分支，死区题不产生梯度
+  # false（默认）= 完整 RLSD（SD + GRPO 混合）
+  grpo_only: false

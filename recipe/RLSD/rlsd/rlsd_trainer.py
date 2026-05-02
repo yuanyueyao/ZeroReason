@@ -225,6 +225,8 @@ class MRSDTrainer(RayPPOTrainer):
         self.graduation_interval = int(OmegaConf.select(mrsd_cfg, "graduation_interval", default=100))
         self.max_prompt_len = int(OmegaConf.select(self.config, "data.max_prompt_length", default=2048))
         self.max_resp_len = int(OmegaConf.select(self.config, "data.max_response_length", default=3072))
+        # GRPO-Only 模式：跳过 SD 分支，死区题不产生梯度，仅用 mixed 题做 GRPO
+        self.grpo_only = bool(OmegaConf.select(mrsd_cfg, "grpo_only", default=False))
 
     def init_workers(self):
         """
@@ -389,12 +391,14 @@ class MRSDTrainer(RayPPOTrainer):
         metrics["rlsd/n_dead_zone"] = float(n_dead)
         metrics["rlsd/n_mixed"] = float(n_mixed)
         metrics["rlsd/n_all_correct"] = float(n_solved)
+        metrics["rlsd/grpo_only_mode"] = float(self.grpo_only)
 
-        print(f"  [rlsd] problems={len(problems)}  dead={n_dead}  mixed={n_mixed}  solved={n_solved}")
+        mode_tag = "grpo-only" if self.grpo_only else "rlsd"
+        print(f"  [{mode_tag}] problems={len(problems)}  dead={n_dead}  mixed={n_mixed}  solved={n_solved}")
         sys.stdout.flush()
 
-        # ── Step 3: SD 分支训练 ──────────────────────────────────────
-        if sd_resps:
+        # ── Step 3: SD 分支训练（GRPO-Only 模式下跳过）────────────────
+        if sd_resps and not self.grpo_only:
             sd_data = _build_sd_train_batch(
                 self.tokenizer, sd_student_msgs, sd_teacher_msgs, sd_resps,
                 self.max_prompt_len, self.max_resp_len
