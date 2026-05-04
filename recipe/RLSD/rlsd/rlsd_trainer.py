@@ -381,7 +381,7 @@ class MRSDTrainer(RayPPOTrainer):
             self._generate_with_logprobs(student_msgs, n_samples=self.student_k)
 
         # ── Step 2: 计算 reward + 分类 ──────────────────────────────
-        sd_student_msgs, sd_teacher_msgs, sd_resps = [], [], []
+        sd_student_msgs, sd_teacher_msgs, sd_resps, sd_lp_indices = [], [], [], []
         grpo_msgs, grpo_resps, grpo_rewards, grpo_lp_indices, grpo_group_ids = [], [], [], [], []
 
         flat_idx = 0
@@ -391,10 +391,11 @@ class MRSDTrainer(RayPPOTrainer):
 
             if n_correct == 0:
                 # Dead zone → SD 分支：teacher 用特权 context (含 GT)
-                for r in resps:
+                for ri, r in enumerate(resps):
                     sd_student_msgs.append(build_student_messages(prob.question))
                     sd_teacher_msgs.append(build_teacher_privileged_messages(prob.question, prob.ground_truth))
                     sd_resps.append(r)
+                    sd_lp_indices.append(flat_idx + ri)
             elif n_correct < len(resps):
                 # Mixed rewards → GRPO 分支
                 for ri, (r, c) in enumerate(zip(resps, correctness)):
@@ -428,6 +429,20 @@ class MRSDTrainer(RayPPOTrainer):
         metrics["rlsd/n_all_correct"] = float(n_solved)
         metrics["rlsd/grpo_only_mode"] = float(self.grpo_only)
 
+        # ── Response length 统计（全部 rollout）────────────────────
+        resp_lens = all_resp_masks.sum(dim=-1).float()  # (total_samples,)
+        metrics["rollout/resp_len_min"]  = resp_lens.min().item()
+        metrics["rollout/resp_len_mean"] = resp_lens.mean().item()
+        metrics["rollout/resp_len_max"]  = resp_lens.max().item()
+
+        # 各分支的长度均值（便于对比 SD/GRPO rollout 长短差异）
+        if grpo_lp_indices:
+            grpo_lens = resp_lens[torch.tensor(grpo_lp_indices, dtype=torch.long)]
+            metrics["rollout/grpo_resp_len_mean"] = grpo_lens.mean().item()
+        if sd_lp_indices and not self.grpo_only:
+            sd_lens = resp_lens[torch.tensor(sd_lp_indices, dtype=torch.long)]
+            metrics["rollout/sd_resp_len_mean"] = sd_lens.mean().item()
+
         mode_tag = "grpo-only" if self.grpo_only else "rlsd"
         print(f"  [{mode_tag}] problems={len(problems)}  dead={n_dead}  mixed={n_mixed}  solved={n_solved}")
         sys.stdout.flush()
@@ -455,22 +470,51 @@ class MRSDTrainer(RayPPOTrainer):
         if grpo_resps:
             lp_indices = torch.tensor(grpo_lp_indices, dtype=torch.long)
 
-            # old_log_probs：优先使用 rollout 直接给出的（与生成 token 严格对齐）
-            if all_old_log_probs is not None:
-                grpo_old_lp = all_old_log_probs[lp_indices]
-            else:
-                # fallback：用 compute_log_prob 重新计算（应极少触发）
-                grpo_old_lp = self._compute_log_probs(grpo_msgs, grpo_resps)
-
             # 取出对应的原始 token ids 和 response mask
             grpo_resp_tokens = all_resp_tokens[lp_indices]   # (B_grpo, T)
             grpo_resp_masks  = all_resp_masks[lp_indices]    # (B_grpo, T)
+
+            # ── 与官方 verl 对齐：用 actor 的 compute_log_prob 重算 old_log_probs
+            # 官方注释："we should always recompute old_log_probs when it is HybridEngine"
+            # compute_log_prob 在 worker 层硬编码 calculate_entropy=True，
+            # 因此 old_log_probs 与 entropys 一次前向同时拿到，无额外开销。
+            lp_batch = _build_logprob_batch_from_tokens(
+                self.tokenizer, grpo_msgs, grpo_resp_tokens, grpo_resp_masks,
+                self.max_prompt_len,
+            )
+            lp_batch.meta_info["micro_batch_size"] = (
+                self.config.actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu
+            )
+            lp_batch.meta_info["temperature"] = float(
+                self.config.actor_rollout_ref.rollout.temperature
+            )
+            lp_batch.meta_info["use_dynamic_bsz"] = bool(
+                self.config.actor_rollout_ref.rollout.log_prob_use_dynamic_bsz
+            )
+            lp_batch.meta_info["max_token_len"] = int(
+                self.config.actor_rollout_ref.rollout.log_prob_max_token_len_per_gpu
+            )
+            lp_padded, lp_pad_size = pad_dataproto_to_divisor(lp_batch, self.actor_rollout_wg.world_size)
+            lp_out_padded = self.actor_rollout_wg.compute_log_prob(lp_padded)
+            lp_out = unpad_dataproto(lp_out_padded, pad_size=lp_pad_size)
+
+            grpo_old_lp = lp_out.batch["old_log_probs"]   # (B_grpo, T)
+
+            # entropy：update 前的策略熵，与官方 agg_loss 聚合方式一致
+            from verl.trainer.ppo.core_algos import agg_loss as _agg_loss
+            entropys = lp_out.batch["entropys"]            # (B_grpo, T)
+            loss_agg_mode = self.config.actor_rollout_ref.actor.loss_agg_mode
+            entropy_agg = _agg_loss(
+                loss_mat=entropys,
+                loss_mask=grpo_resp_masks.float(),
+                loss_agg_mode=loss_agg_mode,
+            )
+            metrics["actor/entropy"] = entropy_agg.item()
 
             # ref_log_probs：use_kl_loss=True 时 dp_actor 需要此字段
             use_kl = OmegaConf.select(self.config, "actor_rollout_ref.actor.use_kl_loss", default=False)
             grpo_ref_lp = None
             if use_kl:
-                # 使用原始 token ids 构建 logprob batch，调用 ref model 计算
                 ref_lp_data = _build_logprob_batch_from_tokens(
                     self.tokenizer, grpo_msgs, grpo_resp_tokens, grpo_resp_masks,
                     self.max_prompt_len,

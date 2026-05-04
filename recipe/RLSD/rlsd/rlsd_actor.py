@@ -125,8 +125,7 @@ class RLSDPPOActor(DataParallelPPOActor):
 
     # ──────────────────────────────────────────────────────────────
     # GRPO 分支：直接复用 verl 原生 update_policy
-    # 这样 config 中的 clip_ratio / clip_ratio_high / clip_ratio_low /
-    # use_kl_loss / entropy_coeff 等参数全部自动生效
+    # entropy 由 trainer 在 update 前调 compute_log_prob 时一并拿到
     # ──────────────────────────────────────────────────────────────
 
     def _update_grpo(self, data: DataProto) -> Dict:

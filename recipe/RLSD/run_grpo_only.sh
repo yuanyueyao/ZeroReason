@@ -49,6 +49,8 @@ echo "  说明:     SD 分支已禁用，死区题跳过（grpo_only=true）"
 echo "========================================================"
 
 # ── 启动训练 ────────────────────────────────────────────────────────────────
+# trainer.project_name=rlsd：与 RLSD 共用 wandb 等项目名，便于同一面板对比。
+# trainer.experiment_name 带 grpo-only 前缀，用于区分本次实验。
 cd "${VERL_ROOT}"
 
 conda run -n ${CONDA_ENV} --no-capture-output \
@@ -64,7 +66,7 @@ conda run -n ${CONDA_ENV} --no-capture-output \
         data.train_files="${DATA_DIR}/train_level45.parquet" \
         data.val_files="${DATA_DIR}/test.parquet" \
         trainer.default_local_dir="${CKPT_DIR}" \
-        trainer.project_name=grpo-only \
+        trainer.project_name=rlsd \
         trainer.experiment_name="grpo-only-qwen25-3b-${TIMESTAMP}" \
         trainer.total_training_steps=500 \
         trainer.save_freq=50 \
