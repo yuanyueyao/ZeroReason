@@ -104,7 +104,7 @@ def _build_sd_train_batch(tokenizer, student_msgs, teacher_msgs, responses_text,
 
 
 def _build_logprob_batch(tokenizer, messages_list, responses_text, max_prompt_len, max_resp_len):
-    """构建仅用于 compute_log_prob 的 batch（单 prompt + response）。"""
+    """构建仅用于 compute_log_prob 的 batch（单 prompt + response 文本）。"""
     tokenizer.padding_side = "left"
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
@@ -129,17 +129,11 @@ def _build_logprob_batch(tokenizer, messages_list, responses_text, max_prompt_le
     })
 
 
-def _build_grpo_train_batch(tokenizer, messages_list, responses_text, rewards,
-                            old_log_probs, group_ids, max_prompt_len, max_resp_len):
+def _build_logprob_batch_from_tokens(tokenizer, messages_list, responses_tokens,
+                                      response_mask, max_prompt_len):
     """
-    构建 GRPO 分支训练 batch。
-
-    与官方 verl GRPO 一致：按 group (problem) 内部做 advantage 归一化，
-    advantages shape = (B, T_resp)，padding 位置为 0。
-
-    Args:
-        rewards: list[float], 每条 response 的 reward (0/1)
-        group_ids: list[int], 每条 response 归属的 problem index（用于组内归一化）
+    构建用于 compute_log_prob / compute_ref_log_prob 的 batch。
+    使用原始生成 token ids（不重新编码文本），确保与 old_log_probs 严格对齐。
     """
     tokenizer.padding_side = "left"
     if tokenizer.pad_token is None:
@@ -148,53 +142,85 @@ def _build_grpo_train_batch(tokenizer, messages_list, responses_text, rewards,
     prompt_texts = [tokenizer.apply_chat_template(m, tokenize=False, add_generation_prompt=True) for m in messages_list]
     enc_p = tokenizer(prompt_texts, return_tensors="pt", max_length=max_prompt_len, truncation=True, padding=True)
 
-    tokenizer.padding_side = "right"
-    enc_r = tokenizer(responses_text, return_tensors="pt", max_length=max_resp_len,
-                      truncation=True, padding=True, add_special_tokens=False)
-    tokenizer.padding_side = "left"
-
-    T_r = enc_r["input_ids"].shape[1]
-    full_ids = torch.cat([enc_p["input_ids"], enc_r["input_ids"]], dim=1)
-    full_mask = torch.cat([enc_p["attention_mask"], enc_r["attention_mask"]], dim=1)
+    full_ids = torch.cat([enc_p["input_ids"], responses_tokens], dim=1)
+    full_mask = torch.cat([enc_p["attention_mask"], response_mask], dim=1)
     pos = (full_mask.cumsum(-1) - 1).clamp(min=0)
-    responses_tensor = enc_r["input_ids"]
-    response_mask = enc_r["attention_mask"]  # (B, T_r)
 
-    # 按 problem (group) 内部归一化 advantage — 与官方 GRPO 一致
-    rewards_t = torch.tensor(rewards, dtype=torch.float32)
+    return DataProto.from_single_dict({
+        "input_ids": full_ids,
+        "attention_mask": full_mask,
+        "position_ids": pos,
+        "responses": responses_tokens,
+    })
+
+
+def _build_grpo_train_batch(tokenizer, messages_list, responses_tokens, response_mask,
+                            rewards, old_log_probs, group_ids, max_prompt_len,
+                            ref_log_probs=None):
+    """
+    构建 GRPO 分支训练 batch。
+
+    使用原始生成的 token IDs（不重新编码文本），确保 old_log_probs 与
+    responses token 位置严格对齐，与官方 verl GRPO 一致。
+
+    Args:
+        responses_tokens: (B, T_r) 原始生成 token ids（来自 rollout 输出）
+        response_mask:    (B, T_r) 对应 attention mask（非 padding 位置为 1）
+        rewards:          list[float], 每条 response 的 reward (0/1)
+        old_log_probs:    (B, T_r) rollout 时的 per-token log probs
+        group_ids:        list[int], 每条 response 归属的 problem index（用于组内归一化）
+        ref_log_probs:    (B, T_r) or None，参考模型的 per-token log probs；
+                          use_kl_loss=True 时必须提供
+    """
     from collections import defaultdict
+
+    tokenizer.padding_side = "left"
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
+
+    prompt_texts = [tokenizer.apply_chat_template(m, tokenize=False, add_generation_prompt=True) for m in messages_list]
+    enc_p = tokenizer(prompt_texts, return_tensors="pt", max_length=max_prompt_len, truncation=True, padding=True)
+
+    # 直接使用原始 token ids，不再重新编码文本（避免 round-trip tokenization 错位）
+    T_r = responses_tokens.shape[1]
+    full_ids = torch.cat([enc_p["input_ids"], responses_tokens], dim=1)
+    full_mask = torch.cat([enc_p["attention_mask"], response_mask], dim=1)
+    pos = (full_mask.cumsum(-1) - 1).clamp(min=0)
+
+    # 按 problem (group) 内部归一化 advantage — 与官方 GRPO 完全一致：
+    #   单样本 group: mean=0, std=1 → advantage = raw_reward（保留梯度信号）
+    rewards_t = torch.tensor(rewards, dtype=torch.float32)
     g2scores = defaultdict(list)
     for i, gid in enumerate(group_ids):
         g2scores[gid].append(rewards_t[i])
     g2mean, g2std = {}, {}
     for gid, scores in g2scores.items():
         st = torch.stack(scores)
-        g2mean[gid] = st.mean()
-        g2std[gid] = st.std() if len(scores) > 1 else torch.tensor(1.0)
+        if len(scores) == 1:
+            g2mean[gid] = torch.tensor(0.0)   # 与官方一致：单样本不减均值
+            g2std[gid] = torch.tensor(1.0)
+        else:
+            g2mean[gid] = st.mean()
+            g2std[gid] = st.std()
 
     normed = torch.zeros_like(rewards_t)
     for i, gid in enumerate(group_ids):
-        normed[i] = (rewards_t[i] - g2mean[gid]) / (g2std[gid] + 1e-8)
+        normed[i] = (rewards_t[i] - g2mean[gid]) / (g2std[gid] + 1e-6)
 
-    # expand to (B, T_resp) 并 mask padding
     advantages = normed.unsqueeze(1).expand(-1, T_r) * response_mask.float()
 
-    # 对齐 old_log_probs 形状
-    if old_log_probs.shape[1] > T_r:
-        old_log_probs = old_log_probs[:, :T_r]
-    elif old_log_probs.shape[1] < T_r:
-        B = old_log_probs.shape[0]
-        pad = torch.zeros(B, T_r - old_log_probs.shape[1], dtype=old_log_probs.dtype)
-        old_log_probs = torch.cat([old_log_probs, pad], dim=1)
-
-    return DataProto.from_single_dict({
+    batch_dict = {
         "input_ids": full_ids,
         "attention_mask": full_mask,
         "position_ids": pos,
-        "responses": responses_tensor,
+        "responses": responses_tokens,
         "old_log_probs": old_log_probs,
         "advantages": advantages,
-    })
+    }
+    if ref_log_probs is not None:
+        batch_dict["ref_log_prob"] = ref_log_probs
+
+    return DataProto.from_single_dict(batch_dict)
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -285,8 +311,12 @@ class MRSDTrainer(RayPPOTrainer):
 
     def _generate_with_logprobs(self, messages_list, n_samples):
         """
-        生成回复并返回 (grouped_texts, old_log_probs)。
-        old_log_probs: (total_samples, T) 或 None。
+        生成回复，返回 (grouped_texts, old_log_probs, all_responses_tokens, all_response_masks)。
+
+        - grouped_texts:        list[list[str]]，按 problem 分组的解码文本
+        - old_log_probs:        (total_samples, T) per-token log probs，或 None
+        - all_responses_tokens: (total_samples, T) 原始 response token ids
+        - all_response_masks:   (total_samples, T) 对应 attention mask（非 padding 为 1）
         """
         repeated = [m for m in messages_list for _ in range(n_samples)]
         gen_batch = _build_gen_batch(self.tokenizer, repeated, self.max_prompt_len)
@@ -305,9 +335,15 @@ class MRSDTrainer(RayPPOTrainer):
                 old_log_probs = out.batch[key]
                 break
 
+        # 保留原始 token ids 和 response mask（用于 GRPO batch 构建，避免重新编码）
+        all_responses_tokens = out.batch["responses"]          # (B, T)
+        resp_len = all_responses_tokens.shape[1]
+        full_attn = out.batch["attention_mask"]                # (B, prompt+resp)
+        all_response_masks = full_attn[:, -resp_len:]          # (B, T) response 部分
+
         n = len(messages_list)
         grouped_texts = [all_texts[i * n_samples:(i + 1) * n_samples] for i in range(n)]
-        return grouped_texts, old_log_probs
+        return grouped_texts, old_log_probs, all_responses_tokens, all_response_masks
 
     def _compute_log_probs(self, messages_list, responses):
         """在 messages_list[i] 的 context 下计算 responses[i] 的 per-token log-probs。"""
@@ -341,9 +377,8 @@ class MRSDTrainer(RayPPOTrainer):
 
         # ── Step 1: Student Rollout ──────────────────────────────────
         student_msgs = [build_student_messages(p.question) for p in problems]
-        student_resps_grouped, all_old_log_probs = self._generate_with_logprobs(
-            student_msgs, n_samples=self.student_k
-        )
+        student_resps_grouped, all_old_log_probs, all_resp_tokens, all_resp_masks = \
+            self._generate_with_logprobs(student_msgs, n_samples=self.student_k)
 
         # ── Step 2: 计算 reward + 分类 ──────────────────────────────
         sd_student_msgs, sd_teacher_msgs, sd_resps = [], [], []
@@ -417,32 +452,45 @@ class MRSDTrainer(RayPPOTrainer):
                 metrics[k] = v
 
         # ── Step 4: GRPO 分支训练 ────────────────────────────────────
-        if grpo_resps and all_old_log_probs is not None:
-            # 提取对应 index 的 old_log_probs
+        if grpo_resps:
             lp_indices = torch.tensor(grpo_lp_indices, dtype=torch.long)
-            grpo_old_lp = all_old_log_probs[lp_indices]
+
+            # old_log_probs：优先使用 rollout 直接给出的（与生成 token 严格对齐）
+            if all_old_log_probs is not None:
+                grpo_old_lp = all_old_log_probs[lp_indices]
+            else:
+                # fallback：用 compute_log_prob 重新计算（应极少触发）
+                grpo_old_lp = self._compute_log_probs(grpo_msgs, grpo_resps)
+
+            # 取出对应的原始 token ids 和 response mask
+            grpo_resp_tokens = all_resp_tokens[lp_indices]   # (B_grpo, T)
+            grpo_resp_masks  = all_resp_masks[lp_indices]    # (B_grpo, T)
+
+            # ref_log_probs：use_kl_loss=True 时 dp_actor 需要此字段
+            use_kl = OmegaConf.select(self.config, "actor_rollout_ref.actor.use_kl_loss", default=False)
+            grpo_ref_lp = None
+            if use_kl:
+                # 使用原始 token ids 构建 logprob batch，调用 ref model 计算
+                ref_lp_data = _build_logprob_batch_from_tokens(
+                    self.tokenizer, grpo_msgs, grpo_resp_tokens, grpo_resp_masks,
+                    self.max_prompt_len,
+                )
+                ref_lp_data.meta_info["micro_batch_size"] = 4
+                ref_lp_data.meta_info["temperature"] = 1.0
+                ref_lp_data.meta_info["use_dynamic_bsz"] = False
+                ref_lp_data.meta_info["max_token_len"] = 8192
+                ref_lp_data_padded, pad_size_ref = pad_dataproto_to_divisor(
+                    ref_lp_data, self.actor_rollout_wg.world_size
+                )
+                ref_out_padded = self.actor_rollout_wg.compute_ref_log_prob(ref_lp_data_padded)
+                ref_out = unpad_dataproto(ref_out_padded, pad_size=pad_size_ref)
+                grpo_ref_lp = ref_out.batch["ref_log_prob"]  # (B_grpo, T)
 
             grpo_data = _build_grpo_train_batch(
-                self.tokenizer, grpo_msgs, grpo_resps, grpo_rewards,
-                grpo_old_lp, grpo_group_ids, self.max_prompt_len, self.max_resp_len,
-            )
-            grpo_data.meta_info["rlsd_mode"] = "grpo"
-            grpo_data.meta_info["temperature"] = 1.0
-            grpo_data.meta_info["global_token_num"] = (
-                grpo_data.batch["attention_mask"].sum(dim=-1).tolist()
-            )
-            grpo_padded, pad_size = pad_dataproto_to_divisor(grpo_data, self.actor_rollout_wg.world_size)
-            grpo_out_padded = self.actor_rollout_wg.update_actor(grpo_padded)
-            grpo_out = unpad_dataproto(grpo_out_padded, pad_size=pad_size)
-            grpo_metrics = grpo_out.meta_info.get("metrics", {})
-            for k, v in grpo_metrics.items():
-                metrics[k] = v
-
-        elif grpo_resps and all_old_log_probs is None:
-            grpo_old_lp = self._compute_log_probs(grpo_msgs, grpo_resps)
-            grpo_data = _build_grpo_train_batch(
-                self.tokenizer, grpo_msgs, grpo_resps, grpo_rewards,
-                grpo_old_lp, grpo_group_ids, self.max_prompt_len, self.max_resp_len,
+                self.tokenizer, grpo_msgs, grpo_resp_tokens, grpo_resp_masks,
+                grpo_rewards, grpo_old_lp, grpo_group_ids,
+                self.max_prompt_len,
+                ref_log_probs=grpo_ref_lp,
             )
             grpo_data.meta_info["rlsd_mode"] = "grpo"
             grpo_data.meta_info["temperature"] = 1.0
@@ -464,7 +512,9 @@ class MRSDTrainer(RayPPOTrainer):
     # ──────────────────────────────────────────────────────────────────
 
     def _evaluate(self, step: int, logger: Tracking) -> dict:
-        """在死区问题上跑 pass@1 greedy。"""
+        """在死区问题上跑 pass@1 greedy，并将全部样本追加写入 eval_samples.jsonl。"""
+        import json
+
         val_path = OmegaConf.select(self.config, "data.mrsd_problems_path", default=None)
         is_jsonl = val_path and val_path.endswith(".jsonl")
         if not val_path:
@@ -477,15 +527,17 @@ class MRSDTrainer(RayPPOTrainer):
 
         messages_list = []
         ground_truths = []
+        questions = []
 
         if is_jsonl:
-            import json
             with open(val_path) as f:
                 for i, line in enumerate(f):
                     if i >= max_val:
                         break
                     r = json.loads(line)
-                    messages_list.append(build_student_messages(r["question"]))
+                    q = r["question"]
+                    questions.append(q)
+                    messages_list.append(build_student_messages(q))
                     ground_truths.append(r["ground_truth"])
         else:
             df = pd.read_parquet(val_path)
@@ -493,6 +545,9 @@ class MRSDTrainer(RayPPOTrainer):
             for _, row in df.iterrows():
                 msgs = row["prompt"] if isinstance(row["prompt"], list) else list(row["prompt"])
                 gt = row["reward_model"]["ground_truth"]
+                # parquet 行里没有原始问题文本，用最后一个 user message 代替
+                q = msgs[-1]["content"] if msgs else ""
+                questions.append(q)
                 messages_list.append(msgs)
                 ground_truths.append(gt)
 
@@ -509,18 +564,34 @@ class MRSDTrainer(RayPPOTrainer):
             out.batch["responses"], skip_special_tokens=True, clean_up_tokenization_spaces=False
         )
 
+        from recipe.RLSD.rlsd.verifier import extract_boxed_answer
+
+        # 样本保存路径：<default_local_dir>/eval_samples.jsonl
+        ckpt_dir = Path(self.config.trainer.default_local_dir)
+        ckpt_dir.mkdir(parents=True, exist_ok=True)
+        sample_file = ckpt_dir / "eval_samples.jsonl"
+
         n_correct = 0
         n_examine = min(3, len(responses))
-        for i, (r, gt) in enumerate(zip(responses, ground_truths)):
-            correct = is_correct(r, gt)
-            if correct:
-                n_correct += 1
-            if i < n_examine:
-                from recipe.RLSD.rlsd.verifier import extract_boxed_answer
-                extracted = extract_boxed_answer(r) or "(none)"
-                status = "+" if correct else "-"
-                print(f"  [{status}] Q{i} gt={gt}  pred={extracted}")
-                sys.stdout.flush()
+        with open(sample_file, "a") as fout:
+            for i, (r, gt, q) in enumerate(zip(responses, ground_truths, questions)):
+                correct = is_correct(r, gt)
+                extracted = extract_boxed_answer(r) or ""
+                if correct:
+                    n_correct += 1
+                if i < n_examine:
+                    status = "+" if correct else "-"
+                    print(f"  [{status}] Q{i} gt={gt}  pred={extracted or '(none)'}")
+                    sys.stdout.flush()
+                fout.write(json.dumps({
+                    "step": step,
+                    "idx": i,
+                    "question": q,
+                    "ground_truth": gt,
+                    "response": r,
+                    "extracted": extracted,
+                    "correct": correct,
+                }, ensure_ascii=False) + "\n")
 
         pass1 = n_correct / max(len(ground_truths), 1)
         metrics = {
@@ -529,7 +600,8 @@ class MRSDTrainer(RayPPOTrainer):
             "val/n_total": float(len(ground_truths)),
         }
         logger.log(data=metrics, step=step)
-        print(f"[eval] step={step}  pass@1={pass1:.3f}  ({n_correct}/{len(ground_truths)})\n")
+        print(f"[eval] step={step}  pass@1={pass1:.3f}  ({n_correct}/{len(ground_truths)})")
+        print(f"[eval] 样本已追加到 {sample_file}\n")
         return metrics
 
     # ──────────────────────────────────────────────────────────────────

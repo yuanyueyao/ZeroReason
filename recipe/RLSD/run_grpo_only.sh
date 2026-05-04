@@ -2,6 +2,10 @@
 # GRPO-Only 对比实验（与 RLSD 做对照）
 # 同数据集、同模型、同超参，唯一区别：跳过 SD 分支，死区题不产生梯度
 # 用法：bash recipe/RLSD/run_grpo_only.sh [额外 hydra overrides]
+#
+# 与 run_rlsd.sh 的有意差异：
+#   use_kl_loss=true：无 SD 分支保底，必须用 KL-to-ref 防止策略漂移/崩溃。
+#   （RLSD 依赖 SD 提供等效正则，故 use_kl_loss=false）
 
 set -euo pipefail
 
@@ -53,6 +57,9 @@ conda run -n ${CONDA_ENV} --no-capture-output \
         actor_rollout_ref.actor.clip_ratio_high=0.28 \
         actor_rollout_ref.actor.clip_ratio_low=0.2 \
         actor_rollout_ref.actor.clip_ratio=0.2 \
+        actor_rollout_ref.actor.use_kl_loss=true \
+        actor_rollout_ref.actor.kl_loss_coef=0.01 \
+        actor_rollout_ref.actor.entropy_coeff=0 \
         data.mrsd_problems_path="${PROBLEMS_PATH}" \
         data.train_files="${DATA_DIR}/train_level45.parquet" \
         data.val_files="${DATA_DIR}/test.parquet" \
@@ -62,6 +69,7 @@ conda run -n ${CONDA_ENV} --no-capture-output \
         trainer.total_training_steps=500 \
         trainer.save_freq=50 \
         trainer.test_freq=10 \
+        trainer.resume_mode=auto \
         mrsd.problems_per_step=8 \
         mrsd.student_rollout_per_problem=8 \
         mrsd.grpo_only=true \
