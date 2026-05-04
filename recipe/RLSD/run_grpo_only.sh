@@ -3,9 +3,8 @@
 # 同数据集、同模型、同超参，唯一区别：跳过 SD 分支，死区题不产生梯度
 # 用法：bash recipe/RLSD/run_grpo_only.sh [额外 hydra overrides]
 #
-# 与 run_rlsd.sh 的有意差异：
-#   use_kl_loss=true：无 SD 分支保底，必须用 KL-to-ref 防止策略漂移/崩溃。
-#   （RLSD 依赖 SD 提供等效正则，故 use_kl_loss=false）
+# GRPO 超参与 run_rlsd.sh 完全一致（use_kl_loss / kl_loss_coef / clip_ratio 等），
+# 唯一区别是禁用 SD 分支（mrsd.grpo_only=true），对照实验仅变 SD 有无。
 
 set -euo pipefail
 
@@ -60,7 +59,7 @@ conda run -n ${CONDA_ENV} --no-capture-output \
         actor_rollout_ref.actor.clip_ratio_low=0.2 \
         actor_rollout_ref.actor.clip_ratio=0.2 \
         actor_rollout_ref.actor.use_kl_loss=true \
-        actor_rollout_ref.actor.kl_loss_coef=0.01 \
+        actor_rollout_ref.actor.kl_loss_coef=0.001 \
         actor_rollout_ref.actor.entropy_coeff=0 \
         data.mrsd_problems_path="${PROBLEMS_PATH}" \
         data.train_files="${DATA_DIR}/train_level45.parquet" \

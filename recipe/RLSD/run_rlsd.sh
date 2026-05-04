@@ -2,10 +2,8 @@
 # RLSD 训练启动脚本（8×A800）
 # 用法：bash recipe/RLSD/run_rlsd.sh [额外 hydra overrides]
 #
-# 与 run_grpo_only.sh 的有意差异（设计选择，非 Bug）：
-#   use_kl_loss=false：SD 分支对死区题施加 KL(teacher‖student) 已提供等效正则，
-#                      混合题的 GRPO 无需额外 KL-to-ref 约束。
-#   GRPO-Only 因无 SD 保底必须开 use_kl_loss=true，二者正则化机制不同但各自自洽。
+# GRPO 超参与 run_grpo_only.sh 完全一致（use_kl_loss / kl_loss_coef / clip_ratio 等），
+# 唯一区别是 RLSD 启用 SD 分支（mrsd.grpo_only=false），对照实验仅变 SD 有无。
 
 set -euo pipefail
 
@@ -74,7 +72,8 @@ conda run -n ${CONDA_ENV} --no-capture-output \
         actor_rollout_ref.actor.clip_ratio_high=0.28 \
         actor_rollout_ref.actor.clip_ratio_low=0.2 \
         actor_rollout_ref.actor.clip_ratio=0.2 \
-        actor_rollout_ref.actor.use_kl_loss=false \
+        actor_rollout_ref.actor.use_kl_loss=true \
+        actor_rollout_ref.actor.kl_loss_coef=0.001 \
         actor_rollout_ref.actor.entropy_coeff=0 \
         data.mrsd_problems_path="${PROBLEMS_PATH}" \
         data.train_files="${DATA_DIR}/train_level45.parquet" \
