@@ -96,17 +96,25 @@ class TaskRunner:
         val_dataset = create_rl_dataset(config.data.val_files, config.data, tokenizer, None)
         train_sampler = create_rl_sampler(config.data, train_dataset)
 
-        # ── MRSD 死区问题数据集 ───────────────────────────────────────
+        # ── MRSD 问题数据集 ───────────────────────────────────────────
         mrsd_cfg = config.mrsd
-        mrsd_problems_path = config.data.mrsd_problems_path
-        print(f"[main] 加载死区问题: {mrsd_problems_path}")
-        mrsd_dataset = MRSDDataset.from_pass_at_k_results(
-            pass_at_k_jsonl=mrsd_problems_path,
-            type_b_only=True,
+        mrsd_problems_path = config.data.get("mrsd_problems_path", None)
+        dataset_kwargs = dict(
             graduation_interval=int(mrsd_cfg.graduation_interval),
             graduation_pass_at_k=int(mrsd_cfg.graduation_pass_at_k),
         )
-        print(f"[main] 共 {len(mrsd_dataset)} 道死区题目")
+        if mrsd_problems_path:
+            print(f"[main] 加载死区问题(jsonl): {mrsd_problems_path}")
+            mrsd_dataset = MRSDDataset.from_pass_at_k_results(
+                pass_at_k_jsonl=mrsd_problems_path,
+                type_b_only=True,
+                **dataset_kwargs,
+            )
+        else:
+            train_files = config.data.train_files
+            print(f"[main] mrsd_problems_path 未设置，从 train_files 加载全量数据: {train_files}")
+            mrsd_dataset = MRSDDataset.from_parquet(train_files, **dataset_kwargs)
+        print(f"[main] 共 {len(mrsd_dataset)} 道题目")
 
         # ── 训练器 ────────────────────────────────────────────────────
         trainer = MRSDTrainer(

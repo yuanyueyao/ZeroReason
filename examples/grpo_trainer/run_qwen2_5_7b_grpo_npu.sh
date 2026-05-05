@@ -9,7 +9,7 @@ python3 -m verl.trainer.main_ppo \
     data.max_response_length=1024 \
     data.filter_overlong_prompts=True \
     data.truncation='error' \
-    actor_rollout_ref.model.path=Qwen/Qwen2.5-7B-Instruct \
+    actor_rollout_ref.model.path=/data3/yyy/models/Qwen2.5-3B-Instruct \
     actor_rollout_ref.actor.optim.lr=5e-8 \
     actor_rollout_ref.model.use_remove_padding=False \
     actor_rollout_ref.actor.ppo_mini_batch_size=32 \
@@ -31,12 +31,12 @@ python3 -m verl.trainer.main_ppo \
     actor_rollout_ref.ref.fsdp_config.param_offload=True \
     algorithm.use_kl_in_reward=False \
     trainer.critic_warmup=0 \
-    trainer.logger=['console'] \
-    trainer.project_name='verl_grpo_example_gsm8k' \
-    trainer.experiment_name='qwen2_5_7b_function_rm' \
-    trainer.n_gpus_per_node=16 \
+    trainer.logger=['console','wandb'] \
+    trainer.project_name='rlsd' \
+    trainer.experiment_name='qwen2_5_3b_grpo_npu' \
+    trainer.n_gpus_per_node=8 \
     trainer.nnodes=1 \
-    trainer.save_freq=-1 \
+    trainer.save_freq=20 \
     trainer.test_freq=5 \
-    trainer.total_epochs=5 \
+    trainer.total_epochs=15 \
     trainer.device=npu $@

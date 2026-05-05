@@ -9,9 +9,9 @@ data:
 
   use_shm: False
 
-  train_files: /data3/yyy/verl/data/rlsd/train_level45.parquet
+  train_files: /data3/yyy/verl/data/gsm8k/train.parquet
 
-  val_files: /data3/yyy/verl/data/rlsd/test.parquet
+  val_files: /data3/yyy/verl/data/gsm8k/test.parquet
 
   prompt_key: prompt
 
@@ -55,8 +55,8 @@ data:
 
     name: null
 
-  # ── MRSD 专用：死区问题文件（math_verify 重新验证后的真死区）──
-  mrsd_problems_path: /data3/yyy/verl/data/rlsd/pass_at_k_pass1_resp8192_20260501_095948_dead_zone.jsonl
+  # ── MRSD 专用：训练题池死区文件（jsonl）；null 则从 train_files parquet 建池。验证集仅看 data.val_files（见 rlsd_trainer._evaluate）。
+  mrsd_problems_path: null
 
 # config for actor, rollout and reference model
 actor_rollout_ref:
@@ -258,7 +258,7 @@ actor_rollout_ref:
 
     mode: sync
 
-    temperature: 0.7
+    temperature: 1
 
     top_k: -1
 

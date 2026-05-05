@@ -12,8 +12,8 @@ from math_verify import parse, verify
 from math_verify.parser import LatexExtractionConfig, ExprExtractionConfig
 
 _GOLD_CONFIGS = [LatexExtractionConfig(), ExprExtractionConfig()]
-_PRED_CONFIGS_STRICT = [LatexExtractionConfig(boxed_match_priority=0)]
-_PRED_CONFIGS_FALLBACK = [LatexExtractionConfig(boxed_match_priority=0), ExprExtractionConfig()]
+# 模型被强制要求将答案写在 \boxed{} 内，pred 只认 boxed/LaTeX，不回退到裸表达式
+_PRED_CONFIGS = [LatexExtractionConfig(boxed_match_priority=0)]
 
 
 # ══════════════════════════════════════════════════════════════
@@ -104,20 +104,15 @@ def is_correct(prediction: str, ground_truth: str) -> bool:
     判断模型预测是否正确。
     使用 math_verify 库：从 prediction 中提取答案并与 ground_truth 做数学等价性比较。
 
-    提取策略（两级）：
-      1. 仅用 LatexExtractionConfig（从 \\boxed{} / LaTeX 环境提取），避免从正文误匹配数字
-      2. 若第 1 级未提取到内容，回退到 LatexExtraction + ExprExtraction
+    提取策略：仅从 \\boxed{} / LaTeX 环境提取，不回退到裸表达式。
+    模型被强制要求将答案写在 \\boxed{} 内，未遵守则视为错误。
     """
     try:
         gold_parsed = parse(_wrap_latex(ground_truth), extraction_config=_GOLD_CONFIGS)
         if not gold_parsed:
             return False
 
-        pred_parsed = parse(prediction, extraction_config=_PRED_CONFIGS_STRICT)
-        if pred_parsed:
-            return verify(gold_parsed, pred_parsed)
-
-        pred_parsed = parse(prediction, extraction_config=_PRED_CONFIGS_FALLBACK)
+        pred_parsed = parse(prediction, extraction_config=_PRED_CONFIGS)
         if not pred_parsed:
             return False
         return verify(gold_parsed, pred_parsed)

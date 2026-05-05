@@ -552,48 +552,57 @@ class MRSDTrainer(RayPPOTrainer):
         return metrics
 
     # ──────────────────────────────────────────────────────────────────
-    # 验证（pass@1 on dead zone set）
+    # 验证（pass@1，仅 data.val_files parquet）
     # ──────────────────────────────────────────────────────────────────
 
+    @staticmethod
+    def _eval_val_parquet_path(val_files):
+        """从 config.data.val_files 得到单个 parquet 路径；暂不合并多路径。"""
+        from omegaconf import ListConfig
+
+        if val_files is None:
+            return None
+        if isinstance(val_files, (list, tuple, ListConfig)):
+            if len(val_files) == 0:
+                return None
+            if len(val_files) > 1:
+                print(
+                    f"[eval] WARN: data.val_files 含 {len(val_files)} 个路径，暂不合并 parquet，仅用第一个。"
+                )
+            val_files = val_files[0]
+        path = str(val_files).strip()
+        return path if path else None
+
     def _evaluate(self, step: int, logger: Tracking) -> dict:
-        """在死区问题上跑 pass@1 greedy，并将全部样本追加写入 eval_samples.jsonl。"""
+        """在 data.val_files 指定的 parquet 上跑 pass@1（greedy），样本追加写入 eval_samples.jsonl。"""
         import json
 
-        val_path = OmegaConf.select(self.config, "data.mrsd_problems_path", default=None)
-        is_jsonl = val_path and val_path.endswith(".jsonl")
-        if not val_path:
-            val_path = OmegaConf.select(self.config, "data.val_files")
+        val_spec = OmegaConf.select(self.config, "data.val_files", default=None)
+        val_path = self._eval_val_parquet_path(val_spec)
         if not val_path:
             return {}
 
-        print(f"\n[eval] step={step}  验证集: {val_path}")
+        if not val_path.endswith(".parquet"):
+            raise ValueError(
+                f"[eval] 当前仅支持 parquet 验证集（data.val_files），收到: {val_path!r}"
+            )
+
+        print(f"\n[eval] step={step}  验证集(parquet,data.val_files): {val_path}")
         max_val = int(OmegaConf.select(self.config, "mrsd.val_max_samples", default=64))
 
         messages_list = []
         ground_truths = []
         questions = []
 
-        if is_jsonl:
-            with open(val_path) as f:
-                for i, line in enumerate(f):
-                    if i >= max_val:
-                        break
-                    r = json.loads(line)
-                    q = r["question"]
-                    questions.append(q)
-                    messages_list.append(build_student_messages(q))
-                    ground_truths.append(r["ground_truth"])
-        else:
-            df = pd.read_parquet(val_path)
-            df = df.head(max_val)
-            for _, row in df.iterrows():
-                msgs = row["prompt"] if isinstance(row["prompt"], list) else list(row["prompt"])
-                gt = row["reward_model"]["ground_truth"]
-                # parquet 行里没有原始问题文本，用最后一个 user message 代替
-                q = msgs[-1]["content"] if msgs else ""
-                questions.append(q)
-                messages_list.append(msgs)
-                ground_truths.append(gt)
+        df = pd.read_parquet(val_path)
+        df = df.head(max_val)
+        for _, row in df.iterrows():
+            msgs = row["prompt"] if isinstance(row["prompt"], list) else list(row["prompt"])
+            gt = row["reward_model"]["ground_truth"]
+            q = msgs[-1]["content"] if msgs else ""
+            questions.append(q)
+            messages_list.append(msgs)
+            ground_truths.append(gt)
 
         gen_batch = _build_gen_batch(self.tokenizer, messages_list, self.max_prompt_len)
         gen_padded, pad_size = pad_dataproto_to_divisor(gen_batch, self.actor_rollout_wg.world_size)
