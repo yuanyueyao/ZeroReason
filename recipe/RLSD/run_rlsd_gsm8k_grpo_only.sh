@@ -5,6 +5,7 @@
 # - data：gsm8k train/test parquet；mrsd_problems_path=null → 从 train.parquet 建 MRSD 题池
 # - mrsd.grpo_only=true → 不跑 SD；仅 mixed rollout 的样本走 GRPO（全队错/全队对无 actor 更新）
 # - actor：与 run_grpo_only.sh 一致（clip / use_kl_loss / kl_loss_coef / entropy_coeff）
+# - 其余常用超参也在下方 python … 参数里写明，可直接改数字
 
 set -euo pipefail
 
@@ -45,14 +46,22 @@ cd "${VERL_ROOT}"
 conda run -n ${CONDA_ENV} --no-capture-output \
     python recipe/RLSD/main_rlsd.py \
         actor_rollout_ref.model.path="${MODEL_PATH}" \
+        actor_rollout_ref.actor.optim.lr=1e-6 \
+        actor_rollout_ref.actor.kl_loss_type=low_var_kl \
         actor_rollout_ref.actor.clip_ratio_high=0.28 \
         actor_rollout_ref.actor.clip_ratio_low=0.2 \
         actor_rollout_ref.actor.clip_ratio=0.2 \
         actor_rollout_ref.actor.use_kl_loss=true \
         actor_rollout_ref.actor.kl_loss_coef=0.001 \
         actor_rollout_ref.actor.entropy_coeff=0 \
+        actor_rollout_ref.actor.ppo_mini_batch_size=64 \
+        actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=2 \
+        actor_rollout_ref.rollout.temperature=1 \
+        actor_rollout_ref.rollout.top_p=0.9 \
         data.train_files="${DATA_DIR}/train.parquet" \
         data.val_files="${DATA_DIR}/test.parquet" \
+        data.max_prompt_length=1024 \
+        data.max_response_length=8192 \
         trainer.default_local_dir="${CKPT_DIR}" \
         trainer.project_name=rlsd \
         trainer.experiment_name="rlsd-gsm8k-grpo-only-temp-1-qwen25-3b-${TIMESTAMP}" \
@@ -60,6 +69,8 @@ conda run -n ${CONDA_ENV} --no-capture-output \
         trainer.save_freq=50 \
         trainer.test_freq=10 \
         trainer.resume_mode=auto \
+        mrsd.student_rollout_per_problem=8 \
+        mrsd.problems_per_step=8 \
         mrsd.grpo_only=true \
         "$@" \
     2>&1 | tee "${LOG_FILE}"

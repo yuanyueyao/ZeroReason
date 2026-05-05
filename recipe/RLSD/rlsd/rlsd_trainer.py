@@ -349,7 +349,9 @@ class MRSDTrainer(RayPPOTrainer):
         """在 messages_list[i] 的 context 下计算 responses[i] 的 per-token log-probs。"""
         data = _build_logprob_batch(self.tokenizer, messages_list, responses, self.max_prompt_len, self.max_resp_len)
         data.meta_info["micro_batch_size"] = 4
-        data.meta_info["temperature"] = 1.0
+        data.meta_info["temperature"] = float(
+            OmegaConf.select(self.config, "actor_rollout_ref.rollout.temperature", default=1.0)
+        )
         data.meta_info["use_dynamic_bsz"] = False
         data.meta_info["max_token_len"] = 8192
         data_padded, pad_size = pad_dataproto_to_divisor(data, self.actor_rollout_wg.world_size)
@@ -374,6 +376,9 @@ class MRSDTrainer(RayPPOTrainer):
         """
         metrics = {}
         t0 = time.time()
+        rollout_temp = float(
+            OmegaConf.select(self.config, "actor_rollout_ref.rollout.temperature", default=1.0)
+        )
 
         # ── Step 1: Student Rollout ──────────────────────────────────
         student_msgs = [build_student_messages(p.question) for p in problems]
@@ -454,7 +459,7 @@ class MRSDTrainer(RayPPOTrainer):
                 self.max_prompt_len, self.max_resp_len
             )
             sd_data.meta_info["rlsd_mode"] = "sd"
-            sd_data.meta_info["temperature"] = 1.0
+            sd_data.meta_info["temperature"] = rollout_temp
             sd_data.meta_info["kl_clip"] = self.kl_clip
             sd_data.meta_info["global_token_num"] = (
                 sd_data.batch["attention_mask"].sum(dim=-1).tolist()
@@ -485,9 +490,7 @@ class MRSDTrainer(RayPPOTrainer):
             lp_batch.meta_info["micro_batch_size"] = (
                 self.config.actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu
             )
-            lp_batch.meta_info["temperature"] = float(
-                self.config.actor_rollout_ref.rollout.temperature
-            )
+            lp_batch.meta_info["temperature"] = rollout_temp
             lp_batch.meta_info["use_dynamic_bsz"] = bool(
                 self.config.actor_rollout_ref.rollout.log_prob_use_dynamic_bsz
             )
@@ -520,7 +523,7 @@ class MRSDTrainer(RayPPOTrainer):
                     self.max_prompt_len,
                 )
                 ref_lp_data.meta_info["micro_batch_size"] = 4
-                ref_lp_data.meta_info["temperature"] = 1.0
+                ref_lp_data.meta_info["temperature"] = rollout_temp
                 ref_lp_data.meta_info["use_dynamic_bsz"] = False
                 ref_lp_data.meta_info["max_token_len"] = 8192
                 ref_lp_data_padded, pad_size_ref = pad_dataproto_to_divisor(
@@ -537,7 +540,7 @@ class MRSDTrainer(RayPPOTrainer):
                 ref_log_probs=grpo_ref_lp,
             )
             grpo_data.meta_info["rlsd_mode"] = "grpo"
-            grpo_data.meta_info["temperature"] = 1.0
+            grpo_data.meta_info["temperature"] = rollout_temp
             grpo_data.meta_info["global_token_num"] = (
                 grpo_data.batch["attention_mask"].sum(dim=-1).tolist()
             )
