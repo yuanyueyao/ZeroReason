@@ -591,14 +591,25 @@ class MRSDTrainer(RayPPOTrainer):
             )
 
         print(f"\n[eval] step={step}  验证集(parquet,data.val_files): {val_path}")
-        max_val = int(OmegaConf.select(self.config, "mrsd.val_max_samples", default=64))
+        # mrsd.val_max_samples：正整数=最多评几条；<=0 或 YAML 显式 null=整份 parquet（缺省 64）
+        raw_max = OmegaConf.select(self.config, "mrsd.val_max_samples", default=64)
+        if raw_max is None:
+            max_val_cap = -1
+        else:
+            max_val_cap = int(raw_max)
+        df = pd.read_parquet(val_path)
+        n_all = len(df)
+        if max_val_cap > 0:
+            df = df.head(max_val_cap)
+        print(
+            f"[eval] 评测行数: {len(df)}/{n_all}"
+            + ("" if max_val_cap > 0 else "  (全量)")
+            + f"  [mrsd.val_max_samples={raw_max}]"
+        )
 
         messages_list = []
         ground_truths = []
         questions = []
-
-        df = pd.read_parquet(val_path)
-        df = df.head(max_val)
         for _, row in df.iterrows():
             msgs = row["prompt"] if isinstance(row["prompt"], list) else list(row["prompt"])
             gt = row["reward_model"]["ground_truth"]
