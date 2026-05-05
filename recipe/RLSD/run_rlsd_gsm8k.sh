@@ -47,6 +47,7 @@ conda run -n ${CONDA_ENV} --no-capture-output \
     python recipe/RLSD/main_rlsd.py \
         actor_rollout_ref.model.path="${MODEL_PATH}" \
         actor_rollout_ref.actor.optim.lr=1e-6 \
+        actor_rollout_ref.actor.optim.lr_warmup_steps=10 \
         actor_rollout_ref.actor.kl_loss_type=low_var_kl \
         actor_rollout_ref.actor.clip_ratio_high=0.28 \
         actor_rollout_ref.actor.clip_ratio_low=0.2 \

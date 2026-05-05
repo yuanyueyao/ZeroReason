@@ -170,8 +170,8 @@ actor_rollout_ref:
 
       lr: 1e-5
 
-      # 负值 → 使用 lr_warmup_steps_ratio
-      lr_warmup_steps: -1
+      # >=0：固定 warmup 优化器步数；负值则用 lr_warmup_steps_ratio * total_training_steps
+      lr_warmup_steps: 10
 
       lr_warmup_steps_ratio: 0.05
 
