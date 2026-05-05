@@ -1,9 +1,9 @@
 """
 数学答案验证器。
 
-使用 HuggingFace math-verify 库做数学等价性判断，
-支持 LaTeX / 纯表达式 / 元组 / 集合 / 分数等多种格式的鲁棒比较。
-同时保留 extract_boxed_answer 用于日志展示。
+使用 HuggingFace math-verify 库：仅将模型回复中最后一个 \\boxed{}（或 \\fbox{}）
+内的字符串与 ground_truth 做数学等价比较；全文其它位置的 LaTeX/数字不参与判对。
+extract_boxed_answer 与判题使用同一套抽取规则，便于 eval 日志与 is_correct 一致。
 """
 
 from typing import Optional
@@ -12,12 +12,10 @@ from math_verify import parse, verify
 from math_verify.parser import LatexExtractionConfig, ExprExtractionConfig
 
 _GOLD_CONFIGS = [LatexExtractionConfig(), ExprExtractionConfig()]
-# 模型被强制要求将答案写在 \boxed{} 内，pred 只认 boxed/LaTeX，不回退到裸表达式
-_PRED_CONFIGS = [LatexExtractionConfig(boxed_match_priority=0)]
 
 
 # ══════════════════════════════════════════════════════════════
-# 括号感知工具函数（用于 extract_boxed_answer 展示用途）
+# 括号感知工具函数（extract_boxed_answer / is_correct 共用）
 # ══════════════════════════════════════════════════════════════
 
 def _find_matching_brace(s: str, open_pos: int) -> int:
@@ -43,7 +41,7 @@ def _extract_brace_group(s: str, pos: int) -> tuple[str, int]:
 
 
 # ══════════════════════════════════════════════════════════════
-# 提取 \\boxed{} / \\fbox{} 内容（仅用于日志展示）
+# 提取 \\boxed{} / \\fbox{} 内容（与 is_correct 共用，亦可用于日志）
 # ══════════════════════════════════════════════════════════════
 
 def last_boxed_only_string(string: str) -> Optional[str]:
@@ -78,7 +76,7 @@ def remove_boxed(s: str) -> str:
 
 
 def extract_boxed_answer(solution: str) -> Optional[str]:
-    """从模型生成文本中提取最终 boxed 答案字符串（用于日志展示）。"""
+    """从模型回复中取最后一个 \\boxed{} / \\fbox{} 内的纯内容（无外层 \\boxed）。"""
     boxed = last_boxed_only_string(solution)
     if boxed is None:
         return None
@@ -102,17 +100,22 @@ def _wrap_latex(s: str) -> str:
 def is_correct(prediction: str, ground_truth: str) -> bool:
     """
     判断模型预测是否正确。
-    使用 math_verify 库：从 prediction 中提取答案并与 ground_truth 做数学等价性比较。
 
-    提取策略：仅从 \\boxed{} / LaTeX 环境提取，不回退到裸表达式。
-    模型被强制要求将答案写在 \\boxed{} 内，未遵守则视为错误。
+    仅从回复全文中的**最后一个** \\boxed{} / \\fbox{} 内取出答案串，再与 ground_truth
+    做 math_verify 等价比较；无 boxed、内容为空或解析失败均视为错误。
     """
+    boxed_inner = extract_boxed_answer(prediction)
+    if boxed_inner is None:
+        return False
+    boxed_inner = boxed_inner.strip()
+    if not boxed_inner:
+        return False
     try:
         gold_parsed = parse(_wrap_latex(ground_truth), extraction_config=_GOLD_CONFIGS)
         if not gold_parsed:
             return False
 
-        pred_parsed = parse(prediction, extraction_config=_PRED_CONFIGS)
+        pred_parsed = parse(_wrap_latex(boxed_inner), extraction_config=_GOLD_CONFIGS)
         if not pred_parsed:
             return False
         return verify(gold_parsed, pred_parsed)
