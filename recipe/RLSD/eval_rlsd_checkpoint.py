@@ -52,17 +52,14 @@ def run_inference(model_dir: str, data_path: str, n: int, out_path: str):
 
     print(f"[infer] 对 {len(samples)} 道题做 greedy decoding\n")
 
-    SYSTEM = "You are a mathematical reasoning assistant. Solve the problem step by step and put your final answer within \\boxed{}."
+    from recipe.RLSD.rlsd.prompt import build_student_messages
 
     results = []
     for i, s in enumerate(samples):
         question = s["question"]
         gt = s["ground_truth"]
 
-        messages = [
-            {"role": "system", "content": SYSTEM},
-            {"role": "user",   "content": f"Problem: {question}\n\nNow provide a detailed step-by-step solution:"},
-        ]
+        messages = build_student_messages(question)
         text = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
         inputs = tokenizer(text, return_tensors="pt").to(model.device)
 

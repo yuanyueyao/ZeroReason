@@ -21,8 +21,11 @@ from recipe.RLSD.rlsd.prompt import (
     build_student_messages,
     build_teacher_context_a,
     build_teacher_context_b,
+    question_from_verl_prompt,
     _truncate_wrong_traj,
 )
+
+_STUDENT_USER_TAIL = "\n\nNow provide a detailed step-by-step solution:"
 
 # ═══════════════════════════════════════════════════════════
 # 测试数据
@@ -74,7 +77,7 @@ def test_student_messages():
     assert msgs[1]["role"] == "user"
     assert msgs[0]["content"] == SYSTEM_STUDENT
     assert "\\boxed{}" in msgs[0]["content"], "system prompt 应包含 \\boxed{}"
-    assert msgs[1]["content"] == f"Problem: {SAMPLE_QUESTION}"
+    assert msgs[1]["content"] == f"Problem: {SAMPLE_QUESTION}{_STUDENT_USER_TAIL}"
     assert SAMPLE_ANSWER not in msgs[1]["content"], "student prompt 不应泄漏答案"
 
     print("✓ 结构正确：2 条消息 (system + user)")
@@ -278,6 +281,26 @@ def test_context_a_vs_b_diff():
     print(f"  差值（≈错误轨迹+引导语）: {len(content_b) - len(content_a)} chars")
 
 
+def test_question_from_verl_prompt_roundtrip():
+    msgs = build_student_messages(SAMPLE_QUESTION)
+    assert question_from_verl_prompt(msgs) == SAMPLE_QUESTION
+
+
+def test_question_from_verl_prompt_gsm8k_style():
+    raw = "Janet's ducks lay 16 eggs per day."
+    prompt = [{"role": "user", "content": raw}]
+    assert question_from_verl_prompt(prompt) == raw
+
+
+def test_question_from_verl_prompt_legacy_user_only_problem_prefix():
+    raw = "Compute 1+1."
+    prompt = [
+        {"role": "system", "content": SYSTEM_STUDENT},
+        {"role": "user", "content": f"Problem: {raw}"},
+    ]
+    assert question_from_verl_prompt(prompt) == raw
+
+
 # ═══════════════════════════════════════════════════════════
 # 运行所有测试
 # ═══════════════════════════════════════════════════════════
@@ -289,6 +312,9 @@ if __name__ == "__main__":
     test_truncation()
     test_with_tokenizer()
     test_context_a_vs_b_diff()
+    test_question_from_verl_prompt_roundtrip()
+    test_question_from_verl_prompt_gsm8k_style()
+    test_question_from_verl_prompt_legacy_user_only_problem_prefix()
 
     print("\n" + "=" * 60)
     print("  ALL TESTS PASSED ✓")

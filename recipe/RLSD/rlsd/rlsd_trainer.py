@@ -27,7 +27,11 @@ from verl.utils.tracking import Tracking
 import sys
 sys.path.insert(0, str(Path(__file__).parent.parent.parent.parent))
 from recipe.RLSD.rlsd.dataset import MRSDDataset, MRSDProblem
-from recipe.RLSD.rlsd.prompt import build_student_messages, build_teacher_privileged_messages
+from recipe.RLSD.rlsd.prompt import (
+    build_student_messages,
+    build_teacher_privileged_messages,
+    question_from_verl_prompt,
+)
 from recipe.RLSD.rlsd.verifier import is_correct
 
 
@@ -611,11 +615,12 @@ class MRSDTrainer(RayPPOTrainer):
         ground_truths = []
         questions = []
         for _, row in df.iterrows():
-            msgs = row["prompt"] if isinstance(row["prompt"], list) else list(row["prompt"])
+            raw_prompt = row["prompt"]
+            msgs = raw_prompt if isinstance(raw_prompt, list) else list(raw_prompt)
             gt = row["reward_model"]["ground_truth"]
-            q = msgs[-1]["content"] if msgs else ""
-            questions.append(q)
-            messages_list.append(msgs)
+            question = question_from_verl_prompt(msgs)
+            questions.append(question)
+            messages_list.append(build_student_messages(question))
             ground_truths.append(gt)
 
         gen_batch = _build_gen_batch(self.tokenizer, messages_list, self.max_prompt_len)

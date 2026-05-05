@@ -17,6 +17,8 @@ from typing import Any, Optional
 
 import pandas as pd
 
+from recipe.RLSD.rlsd.prompt import question_from_verl_prompt
+
 
 class MRSDProblem:
     """代表一道 Type-B（搜索死区）问题的状态。"""
@@ -186,12 +188,9 @@ class MRSDDataset:
         problems = []
         for i, row in df.iterrows():
             prompt = row["prompt"]
-            if isinstance(prompt, list) and len(prompt) > 0:
-                question = prompt[-1].get("content", "")
-                if question.startswith("Problem: "):
-                    question = question[len("Problem: "):]
-            else:
-                question = str(prompt)
+            question = question_from_verl_prompt(
+                prompt if isinstance(prompt, list) else list(prompt)
+            )
             problems.append(
                 MRSDProblem(
                     index=int(i),

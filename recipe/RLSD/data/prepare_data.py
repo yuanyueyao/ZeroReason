@@ -31,22 +31,12 @@ from typing import Any
 
 import pandas as pd
 
-
-# ──────────────────────────────────────────────────────────────
-# 系统提示（与 §2.4 teacher context 模板保持一致）
-# ──────────────────────────────────────────────────────────────
-SYSTEM_PROMPT = (
-    "You are a mathematical reasoning assistant. "
-    "Solve the problem step by step and put your final answer within \\boxed{}."
-)
+from recipe.RLSD.rlsd.prompt import build_student_messages
 
 
 def build_prompt(question: str) -> list[dict]:
-    """构造 student 的 chat messages（仅包含问题，不含 hint）。"""
-    return [
-        {"role": "system", "content": SYSTEM_PROMPT},
-        {"role": "user", "content": f"Problem: {question}"},
-    ]
+    """构造 student 的 chat messages；与训练侧 ``build_student_messages`` 完全一致。"""
+    return build_student_messages(question)
 
 
 # ──────────────────────────────────────────────────────────────

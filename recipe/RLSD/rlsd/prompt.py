@@ -30,12 +30,39 @@ MAX_WRONG_TRAJ_TOKENS = 1024  # §6.3：错误轨迹最多截断到此 token 数
 MAX_WRONG_TRAJ_CHARS = MAX_WRONG_TRAJ_TOKENS * 4  # 粗略估算
 
 
+_USER_TAIL = "\n\nNow provide a detailed step-by-step solution:"
+
+
 def build_student_messages(question: str) -> list[dict]:
     """Student 的输入：仅包含问题，不含任何 hint。"""
     return [
         {"role": "system", "content": SYSTEM_STUDENT},
-        {"role": "user", "content": f"Problem: {question}\n\nNow provide a detailed step-by-step solution:"},
+        {"role": "user", "content": f"Problem: {question}{_USER_TAIL}"},
     ]
+
+
+def question_from_verl_prompt(prompt) -> str:
+    """
+    从 verl parquet 的 ``prompt`` 列（chat messages 列表）还原题干字符串。
+
+    兼容：(a) 官方 GSM8K 等仅一条 user、正文即题干；(b) prepare_data / ``build_student_messages``
+    存的 ``Problem: …`` + ``Now provide…`` 后缀。供 MRSDDataset 与 ``_evaluate`` 与训练侧共用，
+    避免 eval 直接用 parquet 原始 messages 导致与 ``build_student_messages`` 不一致。
+    """
+    if isinstance(prompt, list) and len(prompt) > 0:
+        last = prompt[-1]
+        if not isinstance(last, dict):
+            return str(last)
+        content = last.get("content", "")
+        if not isinstance(content, str):
+            content = str(content)
+        prefix = "Problem: "
+        if content.startswith(prefix):
+            content = content[len(prefix) :]
+        if content.endswith(_USER_TAIL):
+            content = content[: -len(_USER_TAIL)]
+        return content
+    return str(prompt)
 
 
 def build_teacher_privileged_messages(question: str, ground_truth: str) -> list[dict]:
